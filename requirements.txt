@@ -31,6 +31,11 @@ pytest-mock>=3.14.0
 jupyter>=1.1.0
 matplotlib>=3.9.0
 
+# Breakout scanner
+finvizfinance>=0.14.0        # NYSE/NASDAQ universe pre-screen
+edgartools>=3.0.0            # SEC Form 4 insider buying (EDGAR)
+colorama>=0.4.6              # Colour terminal output
+
 # Web dashboard (optional, browser-based)
 streamlit>=1.35.0
 plotly>=5.20.0
