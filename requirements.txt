@@ -1,0 +1,44 @@
+# Pinned for Python 3.13 / 3.14. If you're on Python 3.10-3.12 you can
+# downgrade the floors below — pip will resolve compatible versions.
+#
+# Core ML / numerics
+torch>=2.9.0
+transformers>=4.46.0
+scikit-learn>=1.6.0
+xgboost>=2.1.0
+numpy>=2.0.0
+pandas>=2.2.3
+scipy>=1.14.0
+
+# Market & financial data
+# data_loader uses the Alpaca REST API via `requests` directly; the
+# alpaca-py SDK is used only by src/execution/broker.py for order placement.
+yfinance>=0.2.50
+alpaca-py>=0.30.0
+requests>=2.32.0
+python-dotenv>=1.0.1
+PyYAML>=6.0.2
+
+# Sentiment / NLP support
+sentencepiece>=0.2.0
+tokenizers>=0.20.0
+
+# Testing
+pytest>=8.3.0
+pytest-mock>=3.14.0
+
+# Notebooks (optional, used in notebooks/)
+jupyter>=1.1.0
+matplotlib>=3.9.0
+
+# Web dashboard (optional, browser-based)
+streamlit>=1.35.0
+plotly>=5.20.0
+streamlit-autorefresh>=1.0.1
+
+# Native desktop app (dock-droppable)
+customtkinter>=5.2.2
+Pillow>=10.3.0
+psutil>=5.9.0
+# For building .app bundles on macOS:
+pyinstaller>=6.6.0

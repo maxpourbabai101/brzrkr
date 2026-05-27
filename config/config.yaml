@@ -1,0 +1,140 @@
+# =============================================================================
+# BRZRKR — central configuration
+# =============================================================================
+# Non-secret.  API keys live in .env or environment variables, never here.
+
+project:
+  name: brzrkr
+  version: 0.2.0
+  timezone: UTC
+
+# -- Data -------------------------------------------------------------------
+data:
+  # Core autonomous trading universe (agent scans these every tick)
+  universe:
+    # --- Index ETFs (high liquidity, used as regime anchors)
+    - SPY       # S&P 500
+    - QQQ       # Nasdaq-100
+    - IWM       # Russell 2000 (small-cap proxy)
+    - DIA       # Dow Jones
+    # --- Sector rotation ETFs
+    - XLK       # Technology
+    - XLF       # Financials
+    - XLE       # Energy
+    - XLV       # Health Care
+    # --- Commodity / macro ETFs (futures proxies — Alpaca equities feed)
+    - GLD       # Gold  (/GC proxy)
+    - SLV       # Silver (/SI proxy)
+    - USO       # Crude oil (/CL proxy)
+    - TLT       # 20yr Treasury (/ZB proxy)
+    # --- Leveraged (high-beta tactical)
+    - TQQQ      # 3× QQQ long
+    - SQQQ      # 3× QQQ short
+    # --- High-beta individual stocks
+    - NVDA
+    - TSLA
+    - AAPL
+    - MSFT
+    - META
+    - AMD
+    # --- Crypto ETFs (Bitcoin/Ethereum on Alpaca equities)
+    - IBIT      # BlackRock Bitcoin ETF
+    - GBTC      # Grayscale Bitcoin Trust
+    # ------------------------------------------------------------------
+    # True futures (/ES /NQ /CL /GC) require a CME-connected data feed
+    # such as Polygon, Databento, or Tradier. Alpaca's stock endpoint
+    # does NOT serve them.  Uncomment + wire in a futures adapter first.
+    # - ES
+    # - NQ
+    # - CL
+    # - GC
+    # ------------------------------------------------------------------
+    # Crypto perpetuals trade 24/7 via Alpaca's crypto endpoint
+    # (separate API base URL: data.alpaca.markets/v1beta3/crypto).
+    # Enable by setting ALPACA_CRYPTO=true and using CryptoDataClient.
+    # - BTC/USD
+    # - ETH/USD
+    # - SOL/USD
+
+  lookback_days: 730
+  bar_timeframe: 1Day
+  macro_series:
+    - DGS10     # 10y Treasury yield
+    - VIXCLS    # VIX
+    - DFF       # Effective Fed Funds rate
+    - UNRATE
+  news_query: "stock market OR Federal Reserve OR earnings OR inflation"
+
+# -- Model ------------------------------------------------------------------
+model:
+  seq_len: 256
+  transformer:
+    d_model: 128
+    n_heads: 8
+    n_layers: 3
+    dropout: 0.1
+  ensemble_weights:
+    lstm: 0.30
+    xgboost: 0.40
+    transformer: 0.30
+  checkpoints_dir: models/
+
+# -- Signals ----------------------------------------------------------------
+signals:
+  confidence_threshold: 0.55    # lowered from 0.75 — paper mode, allows model to act
+  output_format: json
+  output_dir: data/signals/
+
+# -- Risk -------------------------------------------------------------------
+risk:
+  max_position_pct: 0.05         # 5% of equity per trade
+  kelly_fraction: 0.5            # half-Kelly
+  default_atr_mult_stop: 2.0
+  default_tp_rr: 2.0             # 2:1 reward/risk
+  correlation_limit: 0.70
+  vix_crisis_level: 35.0
+  realized_vol_crisis: 0.04
+  max_drawdown_pct: 0.15
+  blackout_windows_utc:
+    - { start: "13:30", end: "13:35", description: "us_open" }
+    - { start: "19:55", end: "20:00", description: "us_close" }
+
+# -- Sessions ---------------------------------------------------------------
+sessions:
+  # Extended hours allows pre-market (04:00–09:30 ET) and
+  # after-hours (16:00–20:00 ET) trading via Alpaca limit orders.
+  # NOTE: bracket orders are NOT supported in extended hours.
+  # The agent falls back to plain limit entries; manual SL/TP required.
+  extended_hours_enabled: false
+
+  # Crypto trades 24/7 — enable separately when CryptoDataClient is wired
+  crypto_enabled: false
+
+  # Which sessions the agent is allowed to enter new positions in:
+  #   regular       — 09:30–16:00 ET  (always on)
+  #   pre_market    — 04:00–09:30 ET  (requires extended_hours_enabled)
+  #   after_hours   — 16:00–20:00 ET  (requires extended_hours_enabled)
+  allowed_sessions:
+    - regular
+
+# -- Live trading -----------------------------------------------------------
+live:
+  broker: alpaca
+  account_equity_floor_usd: 25000
+  initial_account_equity_usd: 100000
+
+# -- Learning ---------------------------------------------------------------
+learning:
+  # How many new closed trades before the online learner reruns
+  online_learner_min_new_trades: 5
+  # How many trades to include in each refit window
+  online_learner_lookback: 200
+  # Regime detector refresh interval (minutes)
+  regime_refresh_minutes: 60
+
+# -- Logging ----------------------------------------------------------------
+logging:
+  level: INFO
+  log_path: trading_enhancer.log
+  max_bytes: 10485760            # 10 MB
+  backups: 5

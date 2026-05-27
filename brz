@@ -1,0 +1,119 @@
+#!/bin/bash
+# brz — detached launcher for BRZRKR.
+#
+# Usage:
+#     ./brz             # launch (detached, terminal stays free)
+#     ./brz --stop      # kill the running BRZRKR
+#     ./brz --status    # is it alive?
+#
+# Self-healing: finds a working Python automatically, rebuilds venv
+# if broken, installs deps if missing.
+
+set -u
+cd "$(dirname "$0")" || exit 1
+
+PID_FILE=".brz.pid"
+LOG_FILE="brz.log"
+
+case "${1:-launch}" in
+  --stop|stop)
+    if [ -f "$PID_FILE" ]; then
+      PID=$(cat "$PID_FILE")
+      if kill -0 "$PID" 2>/dev/null; then
+        kill "$PID" 2>/dev/null && echo "Sent SIGTERM to PID $PID."
+      else
+        echo "PID file present but process $PID not running. Cleaning up."
+      fi
+      rm -f "$PID_FILE"
+    else
+      echo "No PID file. BRZRKR isn't tracked by ./brz."
+    fi
+    exit 0
+    ;;
+
+  --status|status)
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat $PID_FILE)" 2>/dev/null; then
+      echo "BRZRKR is running (PID $(cat $PID_FILE))"
+      tail -5 "$LOG_FILE" 2>/dev/null
+    else
+      echo "BRZRKR is not running."
+    fi
+    exit 0
+    ;;
+esac
+
+# Default: launch.
+if [ -f "$PID_FILE" ] && kill -0 "$(cat $PID_FILE)" 2>/dev/null; then
+  echo "BRZRKR already running (PID $(cat $PID_FILE))."
+  exit 1
+fi
+
+# Load .env if present.
+if [ -f .env ]; then
+  set -a; source .env; set +a
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+# Find a working Python (same logic as BRZRKR_LAUNCH.command)
+# ─────────────────────────────────────────────────────────────────────
+PYTHON_CANDIDATES=(
+    "./venv/bin/python"
+    "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"
+    "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
+    "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11"
+    "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14"
+    "/opt/homebrew/bin/python3.13"
+    "/opt/homebrew/bin/python3.12"
+    "/opt/homebrew/bin/python3"
+    "/usr/local/bin/python3"
+    "/usr/bin/python3"
+)
+
+WORKING_PYTHON=""
+for py in "${PYTHON_CANDIDATES[@]}"; do
+    if [ -x "$py" ] && "$py" -c "import sys" 2>/dev/null; then
+        WORKING_PYTHON="$py"
+        break
+    fi
+done
+
+if [ -z "$WORKING_PYTHON" ]; then
+    echo "FATAL: no working Python found. Run BRZRKR_LAUNCH.command for diagnostics."
+    exit 1
+fi
+
+# Auto-build venv if missing or broken.
+if [ ! -x "./venv/bin/python" ] || ! "./venv/bin/python" -c "import sys" 2>/dev/null; then
+    echo "venv missing or broken — rebuilding with $WORKING_PYTHON ..."
+    rm -rf venv
+    "$WORKING_PYTHON" -m venv venv || { echo "venv build failed"; exit 1; }
+    "./venv/bin/python" -m pip install -q --upgrade pip
+    "./venv/bin/python" -m pip install -r requirements.txt || {
+        echo "pip install failed — see output above"; exit 1; }
+fi
+
+# Probe for missing modules and auto-install if any are absent.
+if ! "./venv/bin/python" -c "import customtkinter, PIL, pandas, psutil" 2>/dev/null; then
+    echo "Missing dependencies — installing..."
+    "./venv/bin/python" -m pip install -r requirements.txt
+fi
+
+# Clean stale pycache (handles edits since last run).
+find . -path ./venv -prune -o -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
+
+# Launch detached.
+nohup ./venv/bin/python BRZRKR.py >> "$LOG_FILE" 2>&1 &
+PID=$!
+echo "$PID" > "$PID_FILE"
+sleep 0.5
+
+if kill -0 "$PID" 2>/dev/null; then
+  echo "BRZRKR launched (PID $PID). Terminal is free."
+  echo "Logs:    tail -f $LOG_FILE"
+  echo "Stop:    ./brz --stop"
+else
+  echo "BRZRKR failed to start. Check $LOG_FILE:"
+  tail -20 "$LOG_FILE"
+  rm -f "$PID_FILE"
+  exit 1
+fi

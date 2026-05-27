@@ -1,0 +1,51 @@
+# Virtualenv
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Secrets / env
+.env
+config/secrets.local.yaml
+
+# Data + model artifacts
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
+*.log
+cron.log
+
+# Backtest output
+data/backtest_out/
+data/signals/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Agent output files
+*.out
+*.log.*
+brz.log
+
+# Lock file
+requirements.lock.txt
+
+# App bundle
+dist/
