@@ -32,6 +32,17 @@ Output columns
 
 from __future__ import annotations
 
+# ── self-activating venv bootstrap ──────────────────────────────────────────
+# Re-launches this script with the project venv's Python if not already in it.
+# Lets you run ./hunter.py from anywhere — no "source venv/bin/activate" needed.
+import sys as _sys, os as _os
+_VENV_PY = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                          "venv", "bin", "python")
+if _os.path.exists(_VENV_PY) and _os.path.abspath(_sys.executable) != _os.path.abspath(_VENV_PY):
+    _os.execv(_VENV_PY, [_VENV_PY] + _sys.argv)
+del _sys, _os, _VENV_PY
+# ────────────────────────────────────────────────────────────────────────────
+
 import argparse
 import json
 import logging
