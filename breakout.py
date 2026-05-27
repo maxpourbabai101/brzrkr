@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 """✠ BRZRKR BREAKOUT ✠ — Full NYSE/NASDAQ Breakout Scanner
 
-Runs the institutional-grade 6-stage pipeline across the full NYSE and
+Runs the institutional-grade 14-stage pipeline across the full NYSE and
 NASDAQ to surface the highest-probability life-changing setups:
 
-  Stage 1  Finviz pre-screen  ~800 liquid candidates from ~7000 stocks
-  Stage 2  Trend template     Minervini 8-condition SMA stack
-  Stage 3  VCP detection      ATR contraction · volume dry-up · tight closes
-  Stage 4  RS Rating          IBD formula, percentile-ranked vs. universe
-  Stage 5  Fundamentals       EPS/revenue acceleration · short squeeze fuel
-  Stage 6  Breakout trigger   Price vs pivot · volume surge confirmation
+  Stage 1   Finviz pre-screen    ~800 liquid candidates from ~7000 stocks
+  Stage 2   OHLCV + benchmark    1yr daily bars · SPY · sector ETFs
+  Stage 3   RS Rating            IBD formula, percentile-ranked vs. universe
+  Stage 4   Trend template       Minervini 8-condition SMA stack
+  Stage 5   VCP detection        ATR contraction · volume dry-up · tight closes
+  Stage 6   Breakout trigger     Price vs pivot · volume surge confirmation
+  Stage 7   RS Line new high     price/SPY ratio at 52-week high (elite signal)
+  Stage 8   OBV divergence       On-Balance Volume rising while price consolidates
+  Stage 9   Pocket Pivot         Up-day vol > prior-10-session max down-day vol
+  Stage 10  Sector rotation      Sector ETF above 30-week SMA + trending
+  Stage 11  EPS acceleration     Growth rate accelerating (25→50→80% pattern)
+  Stage 12  Earnings proximity   Coiling 10–45 days before catalyst
+  Stage 13  Options flow         Unusual OTM call sweeps (optional)
+  Stage 14  Composite scoring    9-weight 0–100 score → final ranking
 
 Usage
 ─────
-  ./breakout.py                    # scan NYSE+NASDAQ, top 20
-  ./breakout.py --top 50           # top 50 results
-  ./breakout.py --min-score 65     # raise threshold (tighter filter)
-  ./breakout.py --exchange NYSE    # NYSE only
-  ./breakout.py --add RXRX IONQ    # add specific tickers
-  ./breakout.py --filter breakout  # only confirmed breakouts
-  ./breakout.py --save             # save full JSON to data/breakouts/
-  ./breakout.py --full             # print detailed scorecard per stock
+  ./breakout.py                       # scan NYSE+NASDAQ, top 20
+  ./breakout.py --top 50              # top 50 results
+  ./breakout.py --min-score 65        # raise threshold (tighter filter)
+  ./breakout.py --exchange NYSE       # NYSE only
+  ./breakout.py --add RXRX IONQ       # add specific tickers
+  ./breakout.py --filter breakout     # only confirmed breakouts
+  ./breakout.py --options             # enable options flow scanning (slow)
+  ./breakout.py --earnings-calendar   # fetch next earnings date per stock
+  ./breakout.py --save                # save full JSON to data/breakouts/
+  ./breakout.py --full                # print detailed scorecard per stock
 """
 
 from __future__ import annotations
@@ -184,16 +194,33 @@ def _print_table(results: list, full: bool = False) -> None:
 def _print_detail(r) -> None:
     """Expanded scorecard printed below each row in --full mode."""
     indent = "        "
-    flags  = []
-    if r.passes_trend_template: flags.append(_c("Trend Template ✓", "green"))
-    if r.vcp_detected:          flags.append(_c("VCP ✓", "green"))
-    if r.breakout_confirmed:    flags.append(_c("BREAKOUT ✓", "green"))
-    if r.insider_buying:        flags.append(_c("Insider Buy ✓", "cyan"))
 
-    print(_c(indent + f"Sector: {r.sector}  ·  Industry: {r.industry}  ·  Mkt Cap: ${r.market_cap_b:.1f}B", "dim"))
-    print(_c(indent + f"Momentum: 5d {r.momentum_5d:+.1f}%  20d {r.momentum_20d:+.1f}%  13wk {r.momentum_63d:+.1f}%", "dim"))
-    print(_c(indent + f"ATR contraction: {r.atr_contraction:.0%}  ·  Vol ratio: {r.volume_ratio:.1f}×  ·  Short float: {r.short_float_pct:.1f}%  ·  DTC: {r.days_to_cover:.1f}d", "dim"))
-    print(_c(indent + f"Scores → RS:{r.rs_rating:.0f}  Trend:{r.trend_score}/8  VCP:{r.vcp_score:.0f}  Breakout:{r.breakout_score:.0f}  Fund:{r.fundamental_score:.0f}", "dim"))
+    # ── Primary flags ────────────────────────────────────────────────────────
+    flags = []
+    if r.passes_trend_template: flags.append(_c("Trend ✓",       "green"))
+    if r.vcp_detected:          flags.append(_c("VCP ✓",          "green"))
+    if r.breakout_confirmed:    flags.append(_c("BREAKOUT ✓",     "green"))
+    if r.rs_line_new_high:      flags.append(_c("RS Line ★",      "yellow"))
+    if r.pocket_pivot:          flags.append(_c("Pocket Pivot ⚑", "yellow"))
+    if r.obv_divergence:        flags.append(_c("OBV Accum ↑",   "cyan"))
+    if r.sector_aligned:        flags.append(_c("Sector ✓",       "cyan"))
+    if r.eps_acceleration:      flags.append(_c("EPS Accel ↑",   "green"))
+    if r.options_unusual:       flags.append(_c("Options Flow ⚡","magenta"))
+    if r.insider_buying:        flags.append(_c("Insider Buy ✓",  "cyan"))
+
+    earn_str = (f"  ·  Earnings in {r.earnings_proximity_days}d"
+                if 0 < r.earnings_proximity_days <= 60 else "")
+
+    print(_c(indent + f"Sector: {r.sector}  ·  Industry: {r.industry}"
+             f"  ·  Mkt Cap: ${r.market_cap_b:.1f}B{earn_str}", "dim"))
+    print(_c(indent + f"Momentum: 5d {r.momentum_5d:+.1f}%  20d {r.momentum_20d:+.1f}%"
+             f"  13wk {r.momentum_63d:+.1f}%", "dim"))
+    print(_c(indent + f"ATR contraction: {r.atr_contraction:.0%}  ·  Vol ratio: {r.volume_ratio:.1f}×"
+             f"  ·  Short float: {r.short_float_pct:.1f}%  ·  DTC: {r.days_to_cover:.1f}d", "dim"))
+    print(_c(indent + f"Scores → RS:{r.rs_rating:.0f}  Trend:{r.trend_score}/8"
+             f"  VCP:{r.vcp_score:.0f}  BK:{r.breakout_score:.0f}"
+             f"  Fund:{r.fundamental_score:.0f}"
+             f"  Catalyst:{r.catalyst_score:.0f}  Accum:{r.accumulation_score:.0f}", "dim"))
     if flags:
         print(indent + "  ".join(flags))
     print()
@@ -233,6 +260,10 @@ def main() -> None:
                    help="Save results to data/breakouts/ as JSON")
     p.add_argument("--full",        action="store_true",
                    help="Print expanded scorecard per result")
+    p.add_argument("--options",     action="store_true",
+                   help="Enable options flow scanning (slow, ~1s per stock)")
+    p.add_argument("--earnings-calendar", action="store_true",
+                   help="Fetch next earnings date from yfinance per stock (slow)")
     p.add_argument("--quiet","-q",  action="store_true",
                    help="Skip banner (pipe-friendly)")
     p.add_argument("--verbose","-v",action="store_true",
@@ -257,11 +288,13 @@ def main() -> None:
     from src.scanners.breakout_hunter import BreakoutHunter
 
     hunter = BreakoutHunter(
-        min_composite  = args.min_score,
-        top_n          = None,        # we filter after
-        exchanges      = exchanges,
-        max_universe   = args.max_universe,
-        verbose        = args.verbose,
+        min_composite            = args.min_score,
+        top_n                    = None,        # we filter after
+        exchanges                = exchanges,
+        max_universe             = args.max_universe,
+        verbose                  = args.verbose,
+        enable_options           = args.options,
+        enable_earnings_calendar = args.earnings_calendar,
     )
 
     if not args.quiet:
