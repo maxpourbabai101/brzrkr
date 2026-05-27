@@ -250,7 +250,12 @@ class RegimeDetector:
                               progress=False, auto_adjust=True)
             if raw.empty:
                 return None
-            raw.columns = [c.lower() for c in raw.columns]
+            # yfinance ≥ 0.2 returns MultiIndex columns: ('Close', 'SPY') etc.
+            # Flatten to simple lowercase strings either way.
+            if isinstance(raw.columns[0], tuple):
+                raw.columns = [c[0].lower() for c in raw.columns]
+            else:
+                raw.columns = [c.lower() for c in raw.columns]
             return raw
         except Exception as exc:
             logger.warning("RegimeDetector: yfinance fetch failed — %s", exc)

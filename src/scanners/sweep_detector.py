@@ -116,7 +116,9 @@ class SweepDetector:
             return None
 
         df = df.copy()
-        df.columns = [c.lower() for c in df.columns]
+        _ohlcv = frozenset(("open", "high", "low", "close", "volume"))
+        df.columns = [next((p.lower() for p in c if p.lower() in _ohlcv), c[0].lower())
+                      if isinstance(c, tuple) else c.lower() for c in df.columns]
         if "close" not in df.columns or "volume" not in df.columns:
             return None
         df["ret"] = df["close"].pct_change()

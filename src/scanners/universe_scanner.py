@@ -163,7 +163,9 @@ class UniverseScanner:
         if raw is None or len(raw) < 20:
             return None
 
-        raw.columns = [c.lower() for c in raw.columns]
+        _ohlcv = frozenset(("open", "high", "low", "close", "volume"))
+        raw.columns = [next((p.lower() for p in c if p.lower() in _ohlcv), c[0].lower())
+                       if isinstance(c, tuple) else c.lower() for c in raw.columns]
         close  = raw["close"].squeeze().astype(float)
         volume = raw["volume"].squeeze().astype(float)
 

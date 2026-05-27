@@ -51,7 +51,10 @@ class FeatureDataset:
         ``open, high, low, close, volume`` (case-insensitive).
         """
         prices = prices.copy()
-        prices.columns = [c.lower() for c in prices.columns]
+        # yfinance ≥ 0.2 returns MultiIndex tuples — pick the OHLCV field part.
+        _ohlcv = frozenset(("open", "high", "low", "close", "volume"))
+        prices.columns = [next((p.lower() for p in c if p.lower() in _ohlcv), c[0].lower())
+                          if isinstance(c, tuple) else c.lower() for c in prices.columns]
         if "close" not in prices.columns:
             raise ValueError("prices DataFrame missing 'close' column")
 

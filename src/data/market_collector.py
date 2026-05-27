@@ -40,6 +40,25 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# ── yfinance column normaliser ────────────────────────────────────────
+# yfinance ≥ 0.2 returns MultiIndex columns whose structure differs between
+# single-ticker (field, ticker) and batch-with-group_by (ticker, field).
+# This helper extracts the OHLCV field name regardless of which element it is.
+_OHLCV_FIELDS = frozenset(("open", "high", "low", "close", "volume", "adj close"))
+
+
+def _flatten_columns(cols) -> list:
+    result = []
+    for c in cols:
+        if isinstance(c, str):
+            result.append(c.lower())
+        else:
+            # Find whichever element is an OHLCV field name.
+            field = next((p.lower() for p in c if p.lower() in _OHLCV_FIELDS), None)
+            result.append(field if field else c[0].lower())
+    return result
+
+
 # ── Paths ─────────────────────────────────────────────────────────────
 ROOT          = Path(__file__).resolve().parent.parent.parent
 VECTOR_DIR    = ROOT / "data" / "market_vectors"
@@ -460,7 +479,7 @@ class MarketCollector:
             spy_raw = yf.download("SPY", period=self.period, interval="1d",
                                   progress=False, auto_adjust=True)
             if spy_raw is not None and len(spy_raw) > 5:
-                spy_raw.columns = [c.lower() for c in spy_raw.columns]
+                spy_raw.columns = _flatten_columns(spy_raw.columns)
                 spy_close = spy_raw["close"].squeeze().astype(float)
         except Exception:
             pass
@@ -497,7 +516,7 @@ class MarketCollector:
                             continue
                         df_sym = raw[sym].copy()
 
-                    df_sym.columns = [c.lower() for c in df_sym.columns]
+                    df_sym.columns = _flatten_columns(df_sym.columns)
                     result = compute_features(sym, df_sym, spy_close)
                     if result is None:
                         continue

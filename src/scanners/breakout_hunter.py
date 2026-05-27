@@ -61,6 +61,23 @@ from scipy.stats import percentileofscore
 
 logger = logging.getLogger(__name__)
 
+# ── yfinance column normaliser ────────────────────────────────────────────────
+# yfinance ≥ 0.2 returns MultiIndex tuples: (field, ticker) for single-symbol
+# downloads, or (ticker, field) for group_by='ticker' single-item batches.
+# Find the OHLCV field part regardless of which position it occupies.
+_OHLCV_FIELDS = frozenset(("open", "high", "low", "close", "volume", "adj close"))
+
+
+def _flatten_yf_columns(cols) -> list:
+    result = []
+    for c in cols:
+        if isinstance(c, str):
+            result.append(c.lower())
+        else:
+            field = next((p.lower() for p in c if p.lower() in _OHLCV_FIELDS), None)
+            result.append(field if field else c[0].lower())
+    return result
+
 
 # ── Scoring weights (must sum to 1.0) ────────────────────────────────────────
 W_RS           = 0.18   # IBD RS Rating percentile
@@ -362,7 +379,7 @@ class BreakoutHunter:
                                   if sym in raw.columns.get_level_values(0)
                                   else pd.DataFrame())
                         if df is not None and len(df) >= 60:
-                            df.columns = [c.lower() for c in df.columns]
+                            df.columns = _flatten_yf_columns(df.columns)
                             df = df.dropna(subset=["close", "volume"])
                             result[sym] = df
                     except Exception:

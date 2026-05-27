@@ -74,7 +74,10 @@ class FeatureEngineer:
         """Returns, SMA cross, RSI, momentum, realized vol."""
         df = df.copy()
         # Make sure column names are lowercase.
-        df.columns = [c.lower() for c in df.columns]
+        # yfinance ≥ 0.2 returns MultiIndex tuples — pick the OHLCV field part.
+        _ohlcv = frozenset(("open", "high", "low", "close", "volume"))
+        df.columns = [next((p.lower() for p in c if p.lower() in _ohlcv), c[0].lower())
+                      if isinstance(c, tuple) else c.lower() for c in df.columns]
         if "close" not in df.columns:
             raise ValueError("price frame missing 'close' column")
 
