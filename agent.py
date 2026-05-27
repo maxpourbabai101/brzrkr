@@ -29,6 +29,13 @@ from typing import Any, Dict
 
 import yaml
 
+# Load .env automatically so API keys don't need to be pre-exported in shell.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except Exception:
+    pass   # dotenv not installed; keys must already be in the environment
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

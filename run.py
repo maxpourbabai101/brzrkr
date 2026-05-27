@@ -28,6 +28,13 @@ import numpy as np
 import pandas as pd
 import yaml
 
+# Load .env automatically so API keys don't need to be pre-exported in shell.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except Exception:
+    pass   # dotenv not installed; keys must already be in the environment
+
 # Make `import src.*` work regardless of CWD.
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
