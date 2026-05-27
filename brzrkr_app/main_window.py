@@ -20,7 +20,6 @@ from brzrkr_app.poller import BrokerPoller
 from brzrkr_app.theme import C, G, FONT_DISPLAY, FONT_MONO, FONT_SANS
 from brzrkr_app.pages.status import StatusPage
 from brzrkr_app.pages.trades import TradesPage
-from brzrkr_app.pages.console import ConsolePage
 from brzrkr_app.pages.market import MarketPage
 from brzrkr_app.pages.research import ResearchPage
 from brzrkr_app.pages.admin import AdminPage
@@ -98,7 +97,6 @@ class MainWindow(ctk.CTk):
         nav_items = [
             ("status",     G.RUNE_T,  "STATUS"),
             ("trades",     G.RUNE_F,  "TRADES"),
-            ("console",    G.EXEC,    "CONSOLE"),
             ("market",     G.RUNE_R,  "MARKET"),
             ("research",   G.RUNE_O,  "RESEARCH"),
             ("backtests",  G.CROSS,   "BACKTESTS"),
@@ -142,7 +140,6 @@ class MainWindow(ctk.CTk):
         page_defs = [
             ("status",     StatusPage),
             ("trades",     TradesPage),
-            ("console",    ConsolePage),
             ("market",     MarketPage),
             ("research",   ResearchPage),
             ("backtests",  BacktestsPage),
