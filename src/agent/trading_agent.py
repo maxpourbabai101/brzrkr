@@ -105,6 +105,10 @@ class TradingAgent:
         self._daily_breach: bool = False
         self._countermeasure_blocks: int = 0
 
+        # Latest regime result — default to neutral so side_bias never crashes.
+        from src.learning.regime_detector import RegimeResult
+        self._regime: RegimeResult = RegimeResult()  # safe default until first refresh
+
         # SIGINT / SIGTERM → clean exit.
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -198,23 +202,49 @@ class TradingAgent:
         if self._tick_count % 12 == 1:
             try:
                 from src.learning.regime_detector import current_regime
+                from src.learning.strategy_doctor import apply_doctor_adjustments
+
                 regime = current_regime()
-                # Override confidence threshold if the learner hasn't tuned it
+                self._regime = regime
+
+                # Start with regime recommendations, then let the doctor
+                # override with data-driven adjustments.
                 self.cfg.confidence_threshold = regime.confidence_threshold
                 effective_max = max(
                     1,
                     int(self.cfg.max_positions * regime.max_positions_factor),
                 )
+
+                # Doctor overlay: fine-tuned from actual closed-trade stats.
+                doctor_cfg: Dict[str, Any] = apply_doctor_adjustments({
+                    "confidence_threshold": self.cfg.confidence_threshold,
+                })
+                if "confidence_threshold" in doctor_cfg:
+                    self.cfg.confidence_threshold = float(
+                        doctor_cfg["confidence_threshold"]
+                    )
+
+                # Per-regime side_bias from doctor (data-driven) overrides
+                # the regime default set in regime_detector.py.
+                regime_side_bias = doctor_cfg.get("regime_side_bias", {})
+                if regime.label in regime_side_bias:
+                    regime.side_bias = regime_side_bias[regime.label]
+
+                # Doctor's symbol blacklist
+                self._symbol_blacklist: set = set(
+                    doctor_cfg.get("symbol_blacklist", [])
+                )
+
                 logger.info(
                     "Regime: %s (conf=%.2f) → conf_threshold=%.2f  "
-                    "max_pos=%d  side_bias=%s",
+                    "max_pos=%d  side_bias=%s  blacklist=%s",
                     regime.label, regime.confidence,
-                    regime.confidence_threshold,
+                    self.cfg.confidence_threshold,
                     effective_max, regime.side_bias,
+                    sorted(self._symbol_blacklist) or "none",
                 )
-                self._regime = regime
             except Exception as _rex:
-                logger.debug("Regime detection skipped: %s", _rex)
+                logger.debug("Regime/doctor refresh skipped: %s", _rex)
 
         # Daily loss breaker.
         equity_now = self.executor.get_account_equity()
@@ -250,9 +280,15 @@ class TradingAgent:
             return
 
         # Per-symbol evaluation.
+        blacklist = getattr(self, "_symbol_blacklist", set())
         for symbol in self.cfg.universe:
             if symbol in held:
                 logger.debug("Already long/short %s — skipping", symbol)
+                continue
+            if symbol in blacklist:
+                logger.debug(
+                    "%s: doctor-blacklisted (persistent loser) — skipping", symbol
+                )
                 continue
             self._evaluate_symbol(symbol, equity_now)
 
@@ -289,6 +325,22 @@ class TradingAgent:
                 "%s: confidence %.2f below threshold %.2f — no trade",
                 symbol, prediction.get("confidence", 0),
                 self.cfg.confidence_threshold,
+            )
+            return
+
+        # Regime side-bias filter — never fight the macro trend.
+        direction = prediction.get("direction", "long")
+        side_bias = getattr(self._regime, "side_bias", "both")
+        if side_bias == "long_only" and direction == "short":
+            logger.info(
+                "%s: regime=%s side_bias=long_only — skipping short signal",
+                symbol, getattr(self._regime, "label", "?"),
+            )
+            return
+        if side_bias == "short_only" and direction == "long":
+            logger.info(
+                "%s: regime=%s side_bias=short_only — skipping long signal",
+                symbol, getattr(self._regime, "label", "?"),
             )
             return
 
@@ -341,6 +393,9 @@ class TradingAgent:
                         symbol, signal_dict["direction"], entry)
             return
 
+        # Stamp the current regime into the signal so the doctor can segment.
+        signal_dict["regime_label"] = getattr(self._regime, "label", "unknown")
+
         result = self.executor.submit_signal(signal_dict)
         if result.submitted:
             self._trades_submitted += 1
@@ -356,16 +411,15 @@ class TradingAgent:
         else:
             logger.warning("Order NOT submitted for %s: %s", symbol, result.reason)
 
-        # After each live submission try an incremental model update in the
-        # background — only fires if >= 5 new closed trades have accumulated.
+        # After each live submission run incremental learning + doctor in bg.
         try:
             from src.learning.online_learner import get_learner
+            from src.learning.strategy_doctor import get_doctor
             import threading as _th
-            _th.Thread(
-                target=get_learner().maybe_update, daemon=True,
-            ).start()
+            _th.Thread(target=get_learner().maybe_update, daemon=True).start()
+            _th.Thread(target=get_doctor().maybe_run, daemon=True).start()
         except Exception as _lex:
-            logger.debug("OnlineLearner update skipped: %s", _lex)
+            logger.debug("OnlineLearner/Doctor update skipped: %s", _lex)
 
     # ------------------------------------------------------------------
     # Lifecycle helpers
@@ -410,6 +464,15 @@ class TradingAgent:
         self._stopped = True
 
     def _log_session_summary(self) -> None:
+        # Run the strategy doctor at end-of-session so tomorrow starts
+        # with up-to-date calibrated parameters.
+        try:
+            from src.learning.strategy_doctor import get_doctor
+            get_doctor().end_of_day()
+            logger.info("StrategyDoctor EOD diagnosis complete — see data/doctor_report.md")
+        except Exception as _de:
+            logger.debug("StrategyDoctor EOD skipped: %s", _de)
+
         try:
             equity = self.executor.get_account_equity()
             positions = self.executor.get_open_positions()

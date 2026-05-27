@@ -214,7 +214,7 @@ class RegimeDetector:
             r.stop_pct_multiplier   = 1.0
             r.tp_pct_multiplier     = 1.4    # let winners run
             r.max_positions_factor  = 1.0
-            r.side_bias             = "both"
+            r.side_bias             = "long_only"  # never short into a bull market
 
         elif r.label == "trending_down":
             r.confidence_threshold  = 0.30   # selective on longs in down market
