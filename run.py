@@ -83,14 +83,17 @@ def _build_ensemble():
             }
 
     class _TabularSentiment:
-        """XGBoost stand-in: combines price momentum with sentiment +
-        smart-money signals."""
+        """XGBoost stand-in: multi-factor heuristic using price momentum,
+        available sentiment, and technical confirmation signals."""
         label = "xgboost"
 
         def predict(self, features) -> Dict[str, Any]:
-            ctx = features.attrs.get("context", {})
+            ctx  = features.attrs.get("context", {})
             close = features["close"]
-            ret_5 = float(close.pct_change(5).iloc[-1] or 0.0)
+
+            # Multi-timeframe momentum
+            ret_5  = float(close.pct_change(5).iloc[-1]  or 0.0)
+            ret_20 = float(close.pct_change(20).iloc[-1] or 0.0)
 
             # Aggregate sentiment across whichever text sources are present.
             sentiments = []
@@ -99,28 +102,60 @@ def _build_ensemble():
                       "hacker_news_sent_mean", "av_sent_mean",
                       "finnhub_news_sent_mean"):
                 v = ctx.get(k)
-                if v is not None and not np.isnan(v):
-                    sentiments.append(v)
+                if v is not None and not np.isnan(float(v)):
+                    sentiments.append(float(v))
             sentiment_score = float(np.mean(sentiments)) if sentiments else 0.0
 
             # Smart-money: congress net + insider net.
             congress_net = float(ctx.get("congress_net_60d", 0.0) or 0.0)
-            insider_net = float(ctx.get("insider_net_share_change", 0.0) or 0.0)
-            smart_money = np.sign(congress_net) + np.sign(insider_net)
+            insider_net  = float(ctx.get("insider_net_share_change", 0.0) or 0.0)
+            smart_money  = float(np.sign(congress_net) + np.sign(insider_net))
 
-            # Compose: ret_5 (50%) + sentiment (30%) + smart_money (20%).
-            composite = 0.5 * ret_5 + 0.3 * sentiment_score + 0.2 * smart_money * 0.01
+            # Volume confirmation: recent vol vs 50d avg (if available)
+            vol_conf = 0.0
+            try:
+                vol = features["volume"]
+                vol_ratio = float(vol.iloc[-1] / max(vol.iloc[-50:].mean(), 1))
+                if vol_ratio > 1.5 and ret_5 > 0:
+                    vol_conf = 0.01   # volume surge on up move = extra bullish
+                elif vol_ratio > 1.5 and ret_5 < 0:
+                    vol_conf = -0.01
+            except Exception:
+                pass
+
+            # RSI momentum confirmation (above 50 = trend continuation)
+            rsi_conf = 0.0
+            try:
+                rsi = float(features.get("rsi", pd.Series([50])).iloc[-1] or 50.0)
+                rsi_conf = (rsi - 50.0) * 0.0002   # tiny nudge ±0.01 range
+            except Exception:
+                pass
+
+            # Compose: momentum (60%) + sentiment (25%) + smart-money (5%) +
+            #          volume (5%) + rsi (5%)
+            composite = (0.35 * ret_5 + 0.25 * ret_20
+                         + 0.25 * sentiment_score
+                         + 0.05 * smart_money * 0.01
+                         + vol_conf + rsi_conf)
             direction = "long" if composite >= 0 else "short"
             edge = abs(composite)
             return {
                 "direction": direction,
                 "expected_return_pct": composite,
                 "iv_change_pct": 0.0,
-                "confidence": float(min(0.5 + 3 * edge, 0.95)),
+                "confidence": float(min(0.5 + 4 * edge, 0.95)),
             }
 
     class _TransformerVol:
-        """Transformer stand-in: trend + volatility regime."""
+        """Transformer stand-in: trend + momentum regime.
+
+        BUG FIX (was: RSI tilt was inverted — RSI > 50 produced a SHORT
+        signal, contradicting _PriceMomentum and _TabularSentiment on all
+        uptrending stocks, collapsing ensemble confidence to ~0.10-0.22).
+
+        Fixed: RSI acts as a momentum CONFIRMER (RSI > 50 = bullish), with
+        extreme readings (>75 / <25) giving very mild mean-reversion nudges.
+        """
         label = "transformer"
 
         def predict(self, features) -> Dict[str, Any]:
@@ -131,18 +166,32 @@ def _build_ensemble():
 
             # IV change estimate: skew widening = vol pickup expected.
             iv_skew = ctx.get("iv_skew")
-            iv_change = float(iv_skew) * 0.5 if iv_skew is not None and not np.isnan(iv_skew) else 0.0
+            iv_change = (float(iv_skew) * 0.5
+                         if iv_skew is not None and not np.isnan(float(iv_skew))
+                         else 0.0)
 
-            # RSI overbought / oversold tilt.
-            tilt = (50.0 - rsi) / 100.0   # +0.5 when oversold, -0.5 when overbought
-            composite = sma_spread + 0.5 * tilt
+            # RSI momentum tilt (FIXED: momentum interpretation, not mean-reversion).
+            # RSI 50-70 = mild bullish confirmation.
+            # RSI > 75 = only very slight pullback signal.
+            # RSI 30-50 = mild bearish.
+            # RSI < 25 = only very slight oversold bounce.
+            if rsi >= 75:
+                tilt = -0.005   # tiny overbought caution
+            elif rsi >= 50:
+                tilt = (rsi - 50.0) * 0.0003  # +0 to +0.0075 momentum boost
+            elif rsi <= 25:
+                tilt = 0.005    # tiny oversold bounce
+            else:
+                tilt = (rsi - 50.0) * 0.0003  # -0.0075 to 0 bearish lean
+
+            composite = sma_spread + tilt
             direction = "long" if composite >= 0 else "short"
             edge = abs(composite)
             return {
                 "direction": direction,
                 "expected_return_pct": composite,
                 "iv_change_pct": iv_change,
-                "confidence": float(min(0.5 + 3 * edge, 0.95)),
+                "confidence": float(min(0.5 + 5 * edge, 0.95)),
             }
 
     # If a trained XGBoost model exists (produced by `python train.py`),

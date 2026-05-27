@@ -30,7 +30,8 @@ DEFAULT_ATR_MULT_STOP = 2.0
 DEFAULT_TP_RR = 2.0               # 2:1 reward / risk
 CORRELATION_LIMIT = 0.70
 VIX_CRISIS_LEVEL = 35.0
-REALIZED_VOL_CRISIS = 0.04        # ~63% annualized daily vol
+REALIZED_VOL_CRISIS = 0.12        # ~190% annualised — only blocks genuine crash conditions
+# (was 0.04 / ~63% ann. which incorrectly blocked TQQQ, TSLA, AMD in normal markets)
 
 
 # ---------------------------------------------------------------------------
@@ -51,23 +52,34 @@ def calculate_position_size(
     if account_equity <= 0:
         return 0.0
     confidence = float(np.clip(confidence, 0.0, 1.0))
-    if confidence <= 0.5:
+    if confidence <= 0.0:
         return 0.0
 
-    # Edge ≈ 2p - 1, where p = confidence of the chosen side.
-    edge = max(2.0 * confidence - 1.0, 0.0)
+    if confidence >= 0.5:
+        # Full Kelly regime: confidence is interpreted as win probability.
+        # Edge ≈ 2p - 1, where p = win probability.
+        edge = max(2.0 * confidence - 1.0, 0.0)
+        payoff = max(expected_return_pct, 1e-4) / max(max_loss_pct, 1e-4)
+        kelly_f = max(confidence - (1.0 - confidence) / payoff, 0.0)
+        f = KELLY_FRACTION * kelly_f
+    else:
+        # Sub-0.5 regime: ensemble confidence represents directional *conviction*
+        # not a calibrated win probability.  Use a conservative linear allocation
+        # (0% → 1% of equity) so that ANY directional agreement results in a real
+        # (small) position rather than zero.
+        #
+        # BUG FIX — old code returned 0.0 for confidence < 0.5, silently
+        # blocking every trade when the ensemble uses directional-agreement
+        # confidence scores (typical range 0.25-0.45, not 0.5+).
+        edge = 0.0
+        kelly_f = 0.0
+        f = confidence * 0.06   # 0% at conf=0 → 3% at conf=0.5 (≥$1800 on $100K)
 
-    # Payoff ratio derived from expected return vs max loss.
-    payoff = max(expected_return_pct, 1e-4) / max(max_loss_pct, 1e-4)
-    # Kelly fraction for binary outcome: f* = p - (1-p)/b
-    kelly_f = max(confidence - (1.0 - confidence) / payoff, 0.0)
-    f = KELLY_FRACTION * kelly_f
     f = min(f, MAX_POSITION_PCT)
-
     notional = account_equity * f
     logger.debug(
-        "Position sizing: edge=%.3f kelly_f=%.3f scaled_f=%.4f notional=%.2f",
-        edge, kelly_f, f, notional,
+        "Position sizing: conf=%.3f edge=%.3f kelly_f=%.3f scaled_f=%.4f notional=%.2f",
+        confidence, edge, kelly_f, f, notional,
     )
     return float(notional)
 

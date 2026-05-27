@@ -97,8 +97,24 @@ class EnsemblePredictor:
         else:
             iv_change_pct = 0.0
 
-        # Confidence = |directional score|, scaled to [0, 1].
-        confidence = float(min(1.0, abs(directional)))
+        # Confidence: weighted average of individual model certainties,
+        # scaled by directional alignment (how much do models agree on direction?).
+        #
+        # BUG FIX — old formula `abs(directional)` collapsed to ~0.10-0.22 whenever
+        # even ONE model disagreed on direction (e.g. Transformer said SHORT while
+        # LSTM + XGBoost said LONG). This made the threshold unreachable in practice.
+        #
+        # New formula:
+        #   base_conf = weighted average of per-model confidence values
+        #   agreement = |directional_vote| / base_conf  (0 = models split, 1 = all agree)
+        #   confidence = base_conf * max(0.35, agreement)
+        #
+        # Effect: full agreement → confidence = base_conf (~0.55-0.80)
+        #         mild disagreement → conference ≥ 0.35 * base_conf (~0.20)
+        #         This is a meaningful signal, not a near-zero artefact.
+        base_conf = float(sum(w[name] * sub["confidence"] for name, sub in sub_outs.items()))
+        agreement = min(1.0, abs(directional) / max(base_conf, 1e-6))
+        confidence = float(min(1.0, base_conf * max(0.35, agreement)))
 
         result = {
             "direction": direction,

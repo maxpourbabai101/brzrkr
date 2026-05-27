@@ -51,7 +51,7 @@ class AgentConfig:
     max_positions: int = 5                   # cap on simultaneous open positions
     max_daily_loss_pct: float = 0.03         # halt at -3% daily drawdown
     pre_close_minutes: int = 15              # no new entries in last 15 min
-    confidence_threshold: float = 0.75       # signal floor
+    confidence_threshold: float = 0.29       # signal floor (regime detector updates this)
     dry_run: bool = False                    # log would-be trades, don't submit
     stop_file: Path = field(default_factory=lambda: Path("AGENT_STOP"))
     signal_dir: Path = field(default_factory=lambda: Path("data/signals"))

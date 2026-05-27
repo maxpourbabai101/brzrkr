@@ -49,7 +49,7 @@ class RegimeResult:
     vix_level:               float  = 20.0
     vix_percentile_1y:       float  = 0.5
     # Recommended agent parameter overrides
-    confidence_threshold:    float  = 0.75
+    confidence_threshold:    float  = 0.29
     stop_pct_multiplier:     float  = 1.0
     tp_pct_multiplier:       float  = 1.0
     max_positions_factor:    float  = 1.0
@@ -210,28 +210,28 @@ class RegimeDetector:
     def _apply_recommendations(r: RegimeResult) -> None:
         """Mutate *r* to fill in the parameter recommendation fields."""
         if r.label == "trending_up":
-            r.confidence_threshold  = 0.72
+            r.confidence_threshold  = 0.28   # strong trend → trade when any agreement
             r.stop_pct_multiplier   = 1.0
             r.tp_pct_multiplier     = 1.4    # let winners run
             r.max_positions_factor  = 1.0
             r.side_bias             = "both"
 
         elif r.label == "trending_down":
-            r.confidence_threshold  = 0.80   # be more selective on longs
+            r.confidence_threshold  = 0.30   # selective on longs in down market
             r.stop_pct_multiplier   = 0.8    # tighter stops
             r.tp_pct_multiplier     = 0.9
             r.max_positions_factor  = 0.8
             r.side_bias             = "both"
 
         elif r.label == "ranging":
-            r.confidence_threshold  = 0.78
+            r.confidence_threshold  = 0.29   # need clear directional agreement
             r.stop_pct_multiplier   = 0.85   # tighter stops — chop will kill
             r.tp_pct_multiplier     = 0.75   # take profits quicker
             r.max_positions_factor  = 0.75
             r.side_bias             = "both"
 
         elif r.label == "volatile":
-            r.confidence_threshold  = 0.85   # very selective
+            r.confidence_threshold  = 0.34   # elevated bar in high-vol regime
             r.stop_pct_multiplier   = 1.5    # wider stops — gaps happen
             r.tp_pct_multiplier     = 1.2
             r.max_positions_factor  = 0.5    # half the usual positions

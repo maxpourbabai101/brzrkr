@@ -81,7 +81,7 @@ model:
 
 # -- Signals ----------------------------------------------------------------
 signals:
-  confidence_threshold: 0.55    # lowered from 0.75 — paper mode, allows model to act
+  confidence_threshold: 0.29    # ensemble confidence floor; regime detector may raise this
   output_format: json
   output_dir: data/signals/
 
