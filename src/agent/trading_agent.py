@@ -107,6 +107,10 @@ class TradingAgent:
         from src.execution.trailing_stop_manager import TrailingStopManager
         self._trailing_stop_mgr = TrailingStopManager()
 
+        # ML drawdown predictor — auto-loaded if models/drawdown_model.json exists
+        from src.risk.drawdown_predictor import DrawdownPredictor
+        self._drawdown_predictor = DrawdownPredictor.load_if_exists()
+
         # Mutable session state.
         self._stopped: bool = False
         self._sod_equity: Optional[float] = None
@@ -714,6 +718,22 @@ class TradingAgent:
             logger.info("%s: vol regime drove notional to 0 — skipping", symbol)
             return
         signal_dict["position_size_usd"] = adjusted
+
+        # ML drawdown sizing: further shrink notional when drawdown probability is high.
+        if self._drawdown_predictor is not None:
+            try:
+                dd_prob = self._drawdown_predictor.predict_proba(features)
+                dd_mult = self._drawdown_predictor.size_multiplier(dd_prob)
+                if dd_mult < 1.0:
+                    logger.info(
+                        "%s: drawdown predictor prob=%.2f → size multiplier=%.2f",
+                        symbol, dd_prob, dd_mult,
+                    )
+                signal_dict["position_size_usd"] *= dd_mult
+                signal_dict["drawdown_prob"] = round(dd_prob, 4)
+                signal_dict["drawdown_size_mult"] = round(dd_mult, 4)
+            except Exception as _dd_err:
+                logger.debug("Drawdown predictor failed (non-fatal): %s", _dd_err)
 
         # Always write the JSON record, even in dry_run.
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

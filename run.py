@@ -286,6 +286,22 @@ def run_live(
         signal = generate_signal(symbol, prediction, risk_params)
         if signal is None:
             continue
+
+        # ML drawdown sizing: reduce notional when drawdown probability is elevated.
+        try:
+            from src.risk.drawdown_predictor import DrawdownPredictor
+            _dd = DrawdownPredictor.load_if_exists()
+            if _dd is not None:
+                dd_prob = _dd.predict_proba(features)
+                dd_mult = _dd.size_multiplier(dd_prob)
+                signal["position_size_usd"] = signal["position_size_usd"] * dd_mult
+                signal["drawdown_prob"] = round(dd_prob, 4)
+                signal["drawdown_size_mult"] = round(dd_mult, 4)
+                if dd_mult < 1.0:
+                    logger.info("%s: drawdown prob=%.2f → size×%.2f", symbol, dd_prob, dd_mult)
+        except Exception as _dd_err:
+            logger.debug("Drawdown predictor skipped: %s", _dd_err)
+
         # Attach a compact feature snapshot so the JSON signal records
         # what context drove the trade.
         signal["context_features"] = {
