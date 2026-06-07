@@ -535,6 +535,8 @@ def load_data(
     include_finnhub: bool = True,
     include_alpha_vantage: bool = True,
     include_polygon: bool = False,
+    include_congress: bool = True,
+    include_scraper_sentiment: bool = True,
 ) -> Dict[str, pd.DataFrame]:
     """Bundle every available data source into one dict of frames.
 
@@ -543,67 +545,96 @@ def load_data(
     Each optional source degrades gracefully when its credentials are
     missing — a missing key produces a warning and an empty frame, not
     a hard failure.
+
+    All secondary sources are fetched concurrently (ThreadPoolExecutor)
+    so total latency ≈ slowest single source rather than the sum.
+
+    Enhanced sources (Phase 1):
+    - Congressional STOCK Act trades (via scraper, no API key)
+    - FinBERT-scored news/reddit/social sentiment (local model)
     """
-    end = datetime.now(timezone.utc)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    end   = datetime.now(timezone.utc)
     start = end - timedelta(days=lookback_days)
 
+    # ------------------------------------------------------------------
+    # Prices are fetched first (canonical frame; everything else depends
+    # on having a valid symbol).  Fail fast if this errors.
+    # ------------------------------------------------------------------
     out: Dict[str, pd.DataFrame] = {}
     out["prices"] = fetch_futures(symbol, start, end)
 
+    # ------------------------------------------------------------------
+    # Build a task map: key → zero-argument callable.
+    # Each callable returns either a pd.DataFrame or a dict of frames
+    # (for the scraper bundle, which delivers multiple keys at once).
+    # ------------------------------------------------------------------
+    tasks: Dict[str, Any] = {}
+
     if include_options:
-        try:
-            out["options"] = fetch_options(symbol)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Options fetch skipped: %s", exc)
-            out["options"] = pd.DataFrame()
+        tasks["options"] = lambda: fetch_options(symbol)
 
-    # NewsAPI generic search.
-    try:
-        out["news"] = fetch_news(news_query or symbol, since=start)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("News fetch skipped: %s", exc)
-        out["news"] = pd.DataFrame()
+    tasks["news"] = lambda: fetch_news(news_query or symbol, since=start)
+    tasks["macro"] = lambda: fetch_macro(macro_series or ("DGS10", "VIXCLS"))
 
-    # FRED macro series.
-    try:
-        out["macro"] = fetch_macro(macro_series or ("DGS10", "VIXCLS"))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Macro fetch skipped: %s", exc)
-        out["macro"] = pd.DataFrame()
-
-    # Finnhub: company news, insider transactions, earnings calendar.
     if include_finnhub:
-        try:
-            out["finnhub_news"] = fetch_finnhub_news(symbol, since=start)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Finnhub news skipped: %s", exc)
-            out["finnhub_news"] = pd.DataFrame()
-        try:
-            out["finnhub_insider"] = fetch_finnhub_insider(symbol)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Finnhub insider skipped: %s", exc)
-            out["finnhub_insider"] = pd.DataFrame()
-        try:
-            out["finnhub_earnings"] = fetch_finnhub_earnings_calendar()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Finnhub earnings skipped: %s", exc)
-            out["finnhub_earnings"] = pd.DataFrame()
+        tasks["finnhub_news"]     = lambda: fetch_finnhub_news(symbol, since=start)
+        tasks["finnhub_insider"]  = lambda: fetch_finnhub_insider(symbol)
+        tasks["finnhub_earnings"] = lambda: fetch_finnhub_earnings_calendar()
 
-    # Alpha Vantage news + sentiment scores.
     if include_alpha_vantage:
-        try:
-            out["av_news"] = fetch_alpha_vantage_news(symbol)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Alpha Vantage news skipped: %s", exc)
-            out["av_news"] = pd.DataFrame()
+        tasks["av_news"] = lambda: fetch_alpha_vantage_news(symbol)
 
-    # Polygon backup OHLCV (off by default to avoid rate-limit thrash).
+    # Congress-only fetch (runs if scraper_sentiment is off, else scrape_all covers it)
+    if include_congress and not include_scraper_sentiment:
+        def _congress():
+            from src.data_scraper import WebDataScraper
+            return WebDataScraper().scrape_congress_trades(symbol=symbol)
+        tasks["congress"] = _congress
+
+    # Heavy scraper bundle — covers congress + reddit + google_news + hacker_news + wiki
+    if include_scraper_sentiment:
+        def _scraper_bundle():
+            from src.data_scraper import WebDataScraper
+            return {"_scraper_bundle": WebDataScraper().scrape_all(
+                symbol, score=True, extras=True,
+            )}
+        tasks["_scraper_bundle"] = _scraper_bundle
+
     if include_polygon:
+        tasks["polygon_prices"] = lambda: fetch_polygon_aggregates(symbol, start, end)
+
+    # ------------------------------------------------------------------
+    # Dispatch all tasks concurrently, collect results.
+    # ------------------------------------------------------------------
+    _SENTIMENT_PREFER = {"news", "google_news", "reddit", "hacker_news"}
+
+    def _run(key: str, fn):
         try:
-            out["polygon_prices"] = fetch_polygon_aggregates(symbol, start, end)
+            return key, fn()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Polygon backup OHLCV skipped: %s", exc)
-            out["polygon_prices"] = pd.DataFrame()
+            logger.warning("%s fetch skipped for %s: %s", key, symbol, exc)
+            return key, pd.DataFrame()
+
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 10)) as pool:
+        futures = {pool.submit(_run, k, fn): k for k, fn in tasks.items()}
+        for fut in as_completed(futures):
+            key, result = fut.result()
+            if key == "_scraper_bundle":
+                # result is a dict of DataFrames (or an empty DataFrame on error)
+                bundle = result if isinstance(result, dict) else {}
+                for bkey, df in bundle.items():
+                    if bkey not in out or out.get(bkey) is None or (
+                        hasattr(out.get(bkey), "empty") and out[bkey].empty
+                    ):
+                        out[bkey] = df
+                    elif bkey in _SENTIMENT_PREFER and "sentiment_score" in (
+                        df.columns if hasattr(df, "columns") else []
+                    ):
+                        out[bkey] = df   # prefer scored version
+            else:
+                out[key] = result
 
     return out
 
