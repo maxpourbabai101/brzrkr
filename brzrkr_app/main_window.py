@@ -1,6 +1,8 @@
 """Main window — sidebar navigation, status bar, page stack.
 
-Six pages: Status / Trades / Console / Market / Postmortem / Admin.
+Eight pages: Status / Trades / Market·Intel / Backtests / Strategy /
+Postmortem / System / Admin.  Market·Intel is the combined Market +
+Research page (candlestick chart + watchlist + power plays + signals).
 A background BrokerPoller pushes broker snapshots into a Queue; the
 Tk event loop drains the queue and updates every visible page.
 """
@@ -21,12 +23,12 @@ from brzrkr_app.theme import C, G, FONT_DISPLAY, FONT_MONO, FONT_SANS
 from brzrkr_app.pages.status import StatusPage
 from brzrkr_app.pages.trades import TradesPage
 from brzrkr_app.pages.market import MarketPage
-from brzrkr_app.pages.research import ResearchPage
 from brzrkr_app.pages.admin import AdminPage
 from brzrkr_app.pages.postmortem import PostmortemPage
 from brzrkr_app.pages.backtests import BacktestsPage
 from brzrkr_app.pages.strategy import StrategyPage
 from brzrkr_app.pages.system import SystemPage
+from brzrkr_app.pages.oracle import OraclePage
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,65 +70,97 @@ class MainWindow(ctk.CTk):
     # Layout
     # ------------------------------------------------------------------
     def _build_sidebar(self) -> None:
-        sb = ctk.CTkFrame(self, fg_color=C.VOID, width=240, corner_radius=0)
+        sb = ctk.CTkFrame(self, fg_color=C.VOID, width=220, corner_radius=0)
         sb.grid(row=0, column=0, rowspan=2, sticky="nsw")
         sb.grid_propagate(False)
         sb.grid_columnconfigure(0, weight=1)
 
-        # Brand
+        # Brand block
         brand = ctk.CTkFrame(sb, fg_color="transparent")
-        brand.grid(row=0, column=0, sticky="ew", padx=18, pady=(24, 8))
+        brand.grid(row=0, column=0, sticky="ew", padx=16, pady=(22, 6))
 
         ctk.CTkLabel(
-            brand, text=f"{G.CROSS}  BRZRKR  {G.CROSS}",
-            font=ctk.CTkFont(family=FONT_DISPLAY[0], size=20, weight="bold"),
+            brand, text=f"{G.CROSS}  BRZRKR",
+            font=ctk.CTkFont(family=FONT_DISPLAY[0], size=21, weight="bold"),
             text_color=C.BLOOD_HI, anchor="w",
         ).pack(anchor="w")
         ctk.CTkLabel(
             brand, text="The forge of trade",
-            font=ctk.CTkFont(family=FONT_SANS[0], size=9, weight="bold"),
+            font=ctk.CTkFont(family=FONT_SANS[0], size=9),
             text_color=C.ASH, anchor="w",
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(anchor="w", pady=(1, 0))
 
-        # Hairline
+        # Hairline separator
         ctk.CTkFrame(sb, height=1, fg_color=C.BORDER).grid(
-            row=1, column=0, sticky="ew", padx=16, pady=(10, 14))
+            row=1, column=0, sticky="ew", padx=14, pady=(8, 10))
 
-        # Nav buttons
+        # Nav section label
+        ctk.CTkLabel(
+            sb, text="  NAVIGATE",
+            font=ctk.CTkFont(family=FONT_SANS[0], size=9, weight="bold"),
+            text_color=C.GHOST, anchor="w",
+        ).grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 4))
+
+        # Nav buttons — (key, glyph, label)
         self.nav_buttons: Dict[str, ctk.CTkButton] = {}
         nav_items = [
-            ("status",     G.RUNE_T,  "STATUS"),
-            ("trades",     G.RUNE_F,  "TRADES"),
-            ("market",     G.RUNE_R,  "MARKET"),
-            ("research",   G.RUNE_O,  "RESEARCH"),
-            ("backtests",  G.CROSS,   "BACKTESTS"),
-            ("strategy",   G.ORNATE,  "STRATEGY"),
-            ("postmortem", G.SKULL,   "POSTMORTEM"),
-            ("system",     G.GEAR,    "SYSTEM"),
-            ("admin",      G.DAGGER,  "ADMIN"),
+            ("status",     G.RUNE_T,  "Status"),
+            ("trades",     G.RUNE_F,  "Trades"),
+            ("market",     G.RUNE_R,  "Market · Intel"),
+            ("backtests",  G.CROSS,   "Backtests"),
+            ("strategy",   G.ORNATE,  "Strategy"),
+            ("postmortem", G.SKULL,   "Postmortem"),
+            ("system",     G.GEAR,    "System"),
+            ("admin",      G.DAGGER,  "Admin"),
         ]
         for i, (key, glyph, label) in enumerate(nav_items):
             btn = ctk.CTkButton(
-                sb, text=f"    {glyph}     {label}",
-                anchor="w", height=42,
+                sb,
+                text=f"  {glyph}   {label}",
+                anchor="w", height=38,
                 fg_color="transparent",
-                hover_color=C.PANEL_HI,
+                hover_color=C.INK_HI,
                 text_color=C.PARCHMENT,
-                font=ctk.CTkFont(family=FONT_SANS[0], size=12, weight="bold"),
-                corner_radius=2,
+                font=ctk.CTkFont(family=FONT_SANS[0], size=12),
+                corner_radius=6,
                 command=lambda k=key: self._navigate(k),
             )
-            btn.grid(row=2 + i, column=0, padx=10, pady=2, sticky="ew")
+            btn.grid(row=3 + i, column=0, padx=8, pady=1, sticky="ew")
             self.nav_buttons[key] = btn
+
+        # Divider before Oracle
+        ctk.CTkFrame(sb, height=1, fg_color=C.BORDER).grid(
+            row=3 + len(nav_items), column=0,
+            sticky="ew", padx=14, pady=(10, 6))
+
+        ctk.CTkLabel(
+            sb, text="  AI ANALYST",
+            font=ctk.CTkFont(family=FONT_SANS[0], size=9, weight="bold"),
+            text_color=C.GHOST, anchor="w",
+        ).grid(row=3 + len(nav_items) + 1, column=0, sticky="ew", padx=14, pady=(0, 4))
+
+        oracle_btn = ctk.CTkButton(
+            sb,
+            text=f"  {G.SUN}   Oracle",
+            anchor="w", height=38,
+            fg_color="transparent",
+            hover_color=C.BLOOD_DIM,
+            text_color=C.OMEN,
+            font=ctk.CTkFont(family=FONT_SANS[0], size=12, weight="bold"),
+            corner_radius=6,
+            command=lambda: self._navigate("oracle"),
+        )
+        oracle_btn.grid(row=3 + len(nav_items) + 2, column=0, padx=8, pady=1, sticky="ew")
+        self.nav_buttons["oracle"] = oracle_btn
 
         # Footer
         sb.grid_rowconfigure(99, weight=1)
         foot = ctk.CTkFrame(sb, fg_color="transparent")
-        foot.grid(row=100, column=0, sticky="ew", padx=16, pady=14)
+        foot.grid(row=100, column=0, sticky="ew", padx=14, pady=12)
         ctk.CTkLabel(
-            foot, text=f"{G.DAGGER}  v0.1  ·  paper mode",
+            foot, text=f"{G.DAGGER}  v0.2  ·  paper mode",
             text_color=C.GHOST,
-            font=ctk.CTkFont(family=FONT_SANS[0], size=10),
+            font=ctk.CTkFont(family=FONT_SANS[0], size=9),
         ).pack(anchor="w")
 
     def _build_content(self) -> None:
@@ -135,18 +169,18 @@ class MainWindow(ctk.CTk):
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
 
-        self._extended_hours: bool = False   # toggled from ResearchPage
+        self._extended_hours: bool = False   # toggled from MarketPage status strip
 
         page_defs = [
             ("status",     StatusPage),
             ("trades",     TradesPage),
             ("market",     MarketPage),
-            ("research",   ResearchPage),
             ("backtests",  BacktestsPage),
             ("strategy",   StrategyPage),
             ("postmortem", PostmortemPage),
             ("system",     SystemPage),
             ("admin",      AdminPage),
+            ("oracle",     OraclePage),
         ]
 
         self.pages: Dict[str, ctk.CTkFrame] = {}
@@ -251,9 +285,15 @@ class MainWindow(ctk.CTk):
     def _navigate(self, key: str) -> None:
         for k, btn in self.nav_buttons.items():
             if k == key:
-                btn.configure(fg_color=C.BLOOD_DIM, text_color=C.BONE)
+                if k == "oracle":
+                    btn.configure(fg_color=C.BLOOD_DIM, text_color=C.OMEN)
+                else:
+                    btn.configure(fg_color=C.BLOOD_DIM, text_color=C.BONE)
             else:
-                btn.configure(fg_color="transparent", text_color=C.PARCHMENT)
+                if k == "oracle":
+                    btn.configure(fg_color="transparent", text_color=C.OMEN)
+                else:
+                    btn.configure(fg_color="transparent", text_color=C.PARCHMENT)
         self.pages[key].tkraise()
 
     # ------------------------------------------------------------------
