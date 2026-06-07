@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
-import random
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from src.data.db import append_track_record
 from src.learning.correlation_analyzer import (
     CorrelationAnalyzer,
     _phi,
@@ -20,11 +19,10 @@ from src.learning.postmortem_db import PostmortemDB
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _write_sessions(path: Path, sessions: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
-        for s in sessions:
-            f.write(json.dumps(s) + "\n")
+def _write_sessions(db_path: Path, sessions: list[dict]) -> None:
+    """Write sessions directly into the test SQLite DB."""
+    for s in sessions:
+        append_track_record(s, db_path=db_path)
 
 
 def _session(*, pnl_pct: float, lessons: list[str] | None = None) -> dict:
@@ -44,10 +42,20 @@ def _session(*, pnl_pct: float, lessons: list[str] | None = None) -> dict:
 
 
 @pytest.fixture
-def analyzer(tmp_path):
-    db = PostmortemDB(path=tmp_path / "pm.jsonl")
+def tmp_db(tmp_path):
+    return tmp_path / "test.db"
+
+
+@pytest.fixture
+def analyzer(tmp_db):
+    import threading
+    import src.data.db as _db_mod
+    _db_mod._override_path = tmp_db
+    _db_mod._local = threading.local()  # drop cached connection so new path is used
+    db = PostmortemDB()
     db.bootstrap_if_empty()
-    return CorrelationAnalyzer(db=db, track_record_path=tmp_path / "tr.jsonl")
+    yield CorrelationAnalyzer(db=db, db_path=tmp_db)
+    _db_mod._override_path = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,14 +90,14 @@ def test_analyzer_handles_empty_track_record(analyzer):
     assert report.n_lessons_analyzed == 0
 
 
-def test_analyzer_confirms_negative_correlation(analyzer, tmp_path):
+def test_analyzer_confirms_negative_correlation(analyzer, tmp_db):
     # Lesson l_009 always fires on losing sessions; never on winners.
     sessions = []
     for _ in range(15):
         sessions.append(_session(pnl_pct=-0.02, lessons=["l_009"]))
     for _ in range(15):
         sessions.append(_session(pnl_pct=0.01, lessons=[]))
-    _write_sessions(tmp_path / "tr.jsonl", sessions)
+    _write_sessions(tmp_db, sessions)
 
     report = analyzer.analyze()
     assert report.n_sessions == 30
@@ -101,14 +109,14 @@ def test_analyzer_confirms_negative_correlation(analyzer, tmp_path):
     assert neg[0].suggested_severity > neg[0].current_severity
 
 
-def test_analyzer_detects_countermeasure_working(analyzer, tmp_path):
+def test_analyzer_detects_countermeasure_working(analyzer, tmp_db):
     # Lesson l_012 fires on sessions that outperform (the guardrail saved them).
     sessions = []
     for _ in range(15):
         sessions.append(_session(pnl_pct=0.03, lessons=["l_012"]))
     for _ in range(15):
         sessions.append(_session(pnl_pct=-0.01, lessons=[]))
-    _write_sessions(tmp_path / "tr.jsonl", sessions)
+    _write_sessions(tmp_db, sessions)
 
     report = analyzer.analyze()
     pos = report.positive()
@@ -117,28 +125,28 @@ def test_analyzer_detects_countermeasure_working(analyzer, tmp_path):
     assert pos[0].effect_size > 0
 
 
-def test_analyzer_marks_neutral_when_no_difference(analyzer, tmp_path):
+def test_analyzer_marks_neutral_when_no_difference(analyzer, tmp_db):
     # Both groups make ~the same return.
     sessions = []
     for _ in range(12):
         sessions.append(_session(pnl_pct=0.005, lessons=["l_001"]))
     for _ in range(12):
         sessions.append(_session(pnl_pct=0.005, lessons=[]))
-    _write_sessions(tmp_path / "tr.jsonl", sessions)
+    _write_sessions(tmp_db, sessions)
 
     report = analyzer.analyze(meaningful_effect=0.002)
     neut = report.neutral()
     assert any(c.lesson_id == "l_001" for c in neut)
 
 
-def test_analyzer_respects_min_per_group(analyzer, tmp_path):
+def test_analyzer_respects_min_per_group(analyzer, tmp_db):
     # Only 3 sessions fired the lesson — below default min_per_group=5.
     sessions = []
     for _ in range(3):
         sessions.append(_session(pnl_pct=-0.05, lessons=["l_010"]))
     for _ in range(20):
         sessions.append(_session(pnl_pct=0.01, lessons=[]))
-    _write_sessions(tmp_path / "tr.jsonl", sessions)
+    _write_sessions(tmp_db, sessions)
 
     report = analyzer.analyze(min_per_group=5)
     assert not any(c.lesson_id == "l_010" for c in report.correlations)
@@ -147,13 +155,13 @@ def test_analyzer_respects_min_per_group(analyzer, tmp_path):
 # ---------------------------------------------------------------------------
 # Apply recommendations
 # ---------------------------------------------------------------------------
-def test_apply_dry_run_does_not_mutate(analyzer, tmp_path):
+def test_apply_dry_run_does_not_mutate(analyzer, tmp_db):
     sessions = []
     for _ in range(15):
         sessions.append(_session(pnl_pct=-0.02, lessons=["l_009"]))
     for _ in range(15):
         sessions.append(_session(pnl_pct=0.01, lessons=[]))
-    _write_sessions(tmp_path / "tr.jsonl", sessions)
+    _write_sessions(tmp_db, sessions)
 
     sev_before = analyzer.db.get("l_009").severity
     report = analyzer.analyze()
@@ -162,13 +170,13 @@ def test_apply_dry_run_does_not_mutate(analyzer, tmp_path):
     assert analyzer.db.get("l_009").severity == sev_before
 
 
-def test_apply_commits_changes(analyzer, tmp_path):
+def test_apply_commits_changes(analyzer, tmp_db):
     sessions = []
     for _ in range(15):
         sessions.append(_session(pnl_pct=-0.02, lessons=["l_009"]))
     for _ in range(15):
         sessions.append(_session(pnl_pct=0.01, lessons=[]))
-    _write_sessions(tmp_path / "tr.jsonl", sessions)
+    _write_sessions(tmp_db, sessions)
 
     sev_before = analyzer.db.get("l_009").severity
     report = analyzer.analyze()
@@ -181,7 +189,7 @@ def test_apply_commits_changes(analyzer, tmp_path):
 # ---------------------------------------------------------------------------
 # Report text output sanity
 # ---------------------------------------------------------------------------
-def test_report_text_contains_all_groups(analyzer, tmp_path):
+def test_report_text_contains_all_groups(analyzer, tmp_db):
     sessions = []
     for _ in range(12):
         sessions.append(_session(pnl_pct=-0.02, lessons=["l_009"]))
@@ -191,7 +199,7 @@ def test_report_text_contains_all_groups(analyzer, tmp_path):
         sessions.append(_session(pnl_pct=0.005, lessons=["l_001"]))
     for _ in range(12):
         sessions.append(_session(pnl_pct=0.005, lessons=[]))
-    _write_sessions(tmp_path / "tr.jsonl", sessions)
+    _write_sessions(tmp_db, sessions)
 
     report = analyzer.analyze(meaningful_effect=0.002)
     text = report.to_text()

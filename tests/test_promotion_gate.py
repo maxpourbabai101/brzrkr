@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -18,6 +17,7 @@ def _gate(tmp_path: Path, **criteria_kw) -> PromotionGate:
     return PromotionGate(
         track_file=tmp_path / "track.jsonl",
         criteria=PromotionCriteria(**criteria_kw),
+        db_path=tmp_path / "test.db",
     )
 
 

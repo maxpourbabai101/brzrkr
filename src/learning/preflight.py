@@ -111,21 +111,21 @@ def _agent_checks(
             "if you intended paper trading. (Lesson l_032)"
         )
 
-    # l_046: paper-period mandatory before live. Read track_record.
+    # l_046: paper-period mandatory before live. Read track_record from DB.
     if live_money:
-        path = track_record_path or Path("data/track_record.jsonl")
-        if not path.exists():
+        from src.data.db import read_track_record
+        sessions = read_track_record()
+        n = len(sessions)
+        if n == 0:
             report.blockers.append(
-                "Live money requested but no track_record.jsonl exists. "
+                "Live money requested but no track record exists. "
                 "Run paper sessions first (l_046)."
             )
-        else:
-            n = sum(1 for ln in path.read_text().splitlines() if ln.strip())
-            if n < 20:
-                report.warnings.append(
-                    f"Only {n} sessions in track record. Live money requires "
-                    "20+ profitable paper sessions (gate-enforced, lesson l_046)."
-                )
+        elif n < 20:
+            report.warnings.append(
+                f"Only {n} sessions in track record. Live money requires "
+                "20+ profitable paper sessions (gate-enforced, lesson l_046)."
+            )
 
     # l_038: model not retrained. Warn if xgb model is older than 30 days.
     p = model_path or Path("models/xgb.json")

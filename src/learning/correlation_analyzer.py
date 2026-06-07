@@ -29,7 +29,6 @@ report. Off by default (dry-run); pass `apply=True` to commit.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import statistics
@@ -37,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from src.data.db import read_track_record
 from src.learning.postmortem_db import PostmortemDB
 
 logger = logging.getLogger(__name__)
@@ -106,26 +106,15 @@ class CorrelationAnalyzer:
     def __init__(
         self,
         db: Optional[PostmortemDB] = None,
-        track_record_path: Path = Path("data/track_record.jsonl"),
+        track_record_path: Path = Path("data/track_record.jsonl"),  # kept for compat
+        db_path: Optional[Path] = None,
     ) -> None:
         self.db = db or PostmortemDB()
         self.db.bootstrap_if_empty()
-        self.track_record_path = track_record_path
+        self._db_path = db_path
 
-    # ------------------------------------------------------------------
     def _load_sessions(self) -> List[dict]:
-        if not self.track_record_path.exists():
-            return []
-        out = []
-        for ln in self.track_record_path.read_text().splitlines():
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                out.append(json.loads(ln))
-            except json.JSONDecodeError:
-                continue
-        return out
+        return read_track_record(db_path=self._db_path)
 
     # ------------------------------------------------------------------
     def analyze(

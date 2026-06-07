@@ -24,18 +24,20 @@ trust it.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
+
+import src.data.db as _db_mod
+from src.data.db import append_track_record, read_track_record
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TRACK_FILE = Path("data/track_record.jsonl")
+DEFAULT_TRACK_FILE = Path("data/track_record.jsonl")  # kept for compat
 
 
 class PromotionBlockedError(RuntimeError):
@@ -56,6 +58,8 @@ class PromotionCriteria:
 class PromotionGate:
     track_file: Path = field(default_factory=lambda: DEFAULT_TRACK_FILE)
     criteria: PromotionCriteria = field(default_factory=PromotionCriteria)
+    # Optional override for the SQLite DB path (used in tests for isolation).
+    db_path: Optional[Path] = None
 
     # ------------------------------------------------------------------
     # Recording
@@ -81,7 +85,6 @@ class PromotionGate:
         :class:`src.learning.correlation_analyzer.CorrelationAnalyzer`
         to compute conditional P&L per lesson.
         """
-        self.track_file.parent.mkdir(parents=True, exist_ok=True)
         rec: Dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "broker": broker,
@@ -99,26 +102,14 @@ class PromotionGate:
             "notes": notes,
             "lessons_fired": list(lessons_fired or []),
         }
-        with self.track_file.open("a") as f:
-            f.write(json.dumps(rec) + "\n")
+        append_track_record(rec, db_path=self.db_path)
         logger.info("Promotion gate: recorded session %s", rec)
 
     # ------------------------------------------------------------------
     # Reading
     # ------------------------------------------------------------------
     def load_history(self) -> List[Dict[str, Any]]:
-        if not self.track_file.exists():
-            return []
-        out: List[Dict[str, Any]] = []
-        for line in self.track_file.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                logger.warning("Skipping malformed track-record line: %s", line[:120])
-        return out
+        return read_track_record(db_path=self.db_path)
 
     # ------------------------------------------------------------------
     # Eligibility check

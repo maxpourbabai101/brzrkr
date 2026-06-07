@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
+import xgboost as xgb  # must be imported before model loaders to avoid segfault in xgboost 3.x
 import yaml
 
 # Load .env automatically so API keys don't need to be pre-exported in shell.
@@ -72,22 +73,10 @@ def _build_ensemble():
     the same interface (``.predict(features)``) still applies.
     """
     from src.model.ensemble import EnsemblePredictor, EnsembleWeights
-
-    class _PriceMomentum:
-        """LSTM stand-in: pure price-trend heuristic."""
-        label = "lstm"
-
-        def predict(self, features) -> Dict[str, Any]:
-            close = features["close"]
-            ret_20 = float(close.pct_change(20).iloc[-1] or 0.0)
-            direction = "long" if ret_20 >= 0 else "short"
-            edge = abs(ret_20)
-            return {
-                "direction": direction,
-                "expected_return_pct": ret_20,
-                "iv_change_pct": 0.0,
-                "confidence": float(min(0.5 + 4 * edge, 0.95)),
-            }
+    from src.model.momentum_model import MultiFactorMomentum
+    from src.model.regime_model import RegimeAwareModel
+    from src.model.xgb_predictor import maybe_load_xgb_predictor
+    from src.model.model_loaders import maybe_load_lstm, maybe_load_transformer
 
     class _TabularSentiment:
         """XGBoost stand-in: multi-factor heuristic using price momentum,
@@ -153,53 +142,7 @@ def _build_ensemble():
                 "confidence": float(min(0.5 + 4 * edge, 0.95)),
             }
 
-    class _TransformerVol:
-        """Transformer stand-in: trend + momentum regime.
-
-        BUG FIX (was: RSI tilt was inverted — RSI > 50 produced a SHORT
-        signal, contradicting _PriceMomentum and _TabularSentiment on all
-        uptrending stocks, collapsing ensemble confidence to ~0.10-0.22).
-
-        Fixed: RSI acts as a momentum CONFIRMER (RSI > 50 = bullish), with
-        extreme readings (>75 / <25) giving very mild mean-reversion nudges.
-        """
-        label = "transformer"
-
-        def predict(self, features) -> Dict[str, Any]:
-            ctx = features.attrs.get("context", {})
-            close = features["close"]
-            sma_spread = float(features.get("sma_spread", pd.Series([0])).iloc[-1] or 0.0)
-            rsi = float(features.get("rsi", pd.Series([50])).iloc[-1] or 50.0)
-
-            # IV change estimate: skew widening = vol pickup expected.
-            iv_skew = ctx.get("iv_skew")
-            iv_change = (float(iv_skew) * 0.5
-                         if iv_skew is not None and not np.isnan(float(iv_skew))
-                         else 0.0)
-
-            # RSI momentum tilt (FIXED: momentum interpretation, not mean-reversion).
-            # RSI 50-70 = mild bullish confirmation.
-            # RSI > 75 = only very slight pullback signal.
-            # RSI 30-50 = mild bearish.
-            # RSI < 25 = only very slight oversold bounce.
-            if rsi >= 75:
-                tilt = -0.005   # tiny overbought caution
-            elif rsi >= 50:
-                tilt = (rsi - 50.0) * 0.0003  # +0 to +0.0075 momentum boost
-            elif rsi <= 25:
-                tilt = 0.005    # tiny oversold bounce
-            else:
-                tilt = (rsi - 50.0) * 0.0003  # -0.0075 to 0 bearish lean
-
-            composite = sma_spread + tilt
-            direction = "long" if composite >= 0 else "short"
-            edge = abs(composite)
-            return {
-                "direction": direction,
-                "expected_return_pct": composite,
-                "iv_change_pct": iv_change,
-                "confidence": float(min(0.5 + 5 * edge, 0.95)),
-            }
+    from src.model.regime_model import RegimeAwareModel
 
     # If a trained XGBoost model exists (produced by `python train.py`),
     # load it as the xgboost sub-model. Otherwise fall back to the
@@ -214,10 +157,30 @@ def _build_ensemble():
         logger.info("Ensemble using HEURISTIC xgboost stand-in (no trained model found). "
                     "Run `python train.py` to train one.")
 
+    # Load trained LSTM if available
+    lstm_predictor = maybe_load_lstm()
+    if lstm_predictor is not None:
+        lstm_sub = lstm_predictor
+        logger.info("Ensemble using TRAINED LSTM from models/lstm_model.pt")
+    else:
+        lstm_sub = MultiFactorMomentum()
+        logger.info("Ensemble using HEURISTIC LSTM stand-in (no trained model found). "
+                    "Run `python train_lstm.py` to train one.")
+
+    # Load trained Transformer if available
+    transformer_predictor = maybe_load_transformer()
+    if transformer_predictor is not None:
+        transformer_sub = transformer_predictor
+        logger.info("Ensemble using TRAINED Transformer from models/transformer_model.pt")
+    else:
+        transformer_sub = RegimeAwareModel()
+        logger.info("Ensemble using HEURISTIC Transformer stand-in (no trained model found). "
+                    "Run `python train_transformer.py` to train one.")
+
     return EnsemblePredictor(
-        lstm=_PriceMomentum(),
+        lstm=lstm_sub,
         xgboost=xgb_sub,
-        transformer=_TransformerVol(),
+        transformer=transformer_sub,
         weights=EnsembleWeights(),
     )
 
@@ -333,6 +296,11 @@ def run_live(
         path = out_dir / f"{symbol}_{ts}.json"
         path.write_text(json.dumps(signal, indent=2, default=str))
         logger.info("Signal written: %s", path)
+        try:
+            from src.data.db import write_signal
+            write_signal(signal)
+        except Exception as _db_err:
+            logger.debug("DB signal write skipped: %s", _db_err)
 
         if executor is not None:
             result = executor.submit_signal(signal)
