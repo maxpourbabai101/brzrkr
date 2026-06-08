@@ -263,15 +263,53 @@ class BacktestsPage(ctk.CTkFrame):
             pass  # widget destroyed or not in main loop
 
     def _load_scenarios(self) -> pd.DataFrame:
-        # Prefer the partial (most recent) file, fall back to dated reports.
+        """Load the richest available scenario data.
+
+        Strategy:
+        1. Read _results_so_far.csv if it has at least 3 non-failed rows
+           (meaning an active or recently active batch).
+        2. Otherwise fall through to the latest dated scenario_report_*.csv
+           which contains the full previous batch.
+        3. If both sources have data, merge them (dated first, partial overrides
+           matching scenario+asset rows so the newest status wins).
+        """
         partial = SCENARIO_DIR / "_results_so_far.csv"
-        if partial.exists():
-            return pd.read_csv(partial)
-        # Latest dated report
         reports = sorted(SCENARIO_DIR.glob("scenario_report_*.csv"))
+
+        partial_df = pd.DataFrame()
+        if partial.exists():
+            try:
+                partial_df = pd.read_csv(partial)
+            except Exception:
+                partial_df = pd.DataFrame()
+
+        # Count non-failed rows in partial
+        if not partial_df.empty:
+            failed_col = next((c for c in ("failed", "error") if c in partial_df.columns), None)
+            if failed_col:
+                live_rows = partial_df[~partial_df[failed_col].astype(str).str.lower().isin(("true", "1", "yes"))]
+            else:
+                live_rows = partial_df
+            if len(live_rows) >= 3:
+                # Active batch with real data — use it directly
+                return partial_df
+
+        # Fall through: load the latest dated report
         if reports:
-            return pd.read_csv(reports[-1])
-        return pd.DataFrame()
+            try:
+                dated_df = pd.read_csv(reports[-1])
+                # Merge with any fresh partial rows so they show as updated
+                if not partial_df.empty and not dated_df.empty:
+                    key_cols = [c for c in ("scenario", "asset") if c in dated_df.columns and c in partial_df.columns]
+                    if key_cols:
+                        dated_df = dated_df[~dated_df.set_index(key_cols).index.isin(
+                            partial_df.set_index(key_cols).index)]
+                    return pd.concat([dated_df, partial_df], ignore_index=True)
+                return dated_df
+            except Exception:
+                pass
+
+        return partial_df  # last resort: whatever partial has
 
     def _apply(self, df: pd.DataFrame) -> None:
         if df.empty:
