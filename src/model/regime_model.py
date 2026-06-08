@@ -85,19 +85,22 @@ class RegimeAwareModel:
 
             elif is_trending:
                 direction  = "long" if adx_up else "short"
-                edge       = min((adx - 25) / 50.0, 0.28)
-                alignment  = 1.15 if (adx_up == above_ema20) else 0.85
-                confidence = float(min(0.55 + edge * alignment, 0.86))
+                # Strong trend (ADX > 35) gets more conviction
+                edge       = min((adx - 25) / 40.0, 0.38)
+                alignment  = 1.20 if (adx_up == above_ema20 == ema_bullish) else (
+                             1.05 if (adx_up == above_ema20) else 0.80)
+                confidence = float(min(0.55 + edge * alignment, 0.93))
 
             elif is_ranging:
                 zscore = float((price - float(sma20.iloc[-1])) /
                                (float(std20.iloc[-1]) + 1e-9))
                 direction  = "long" if zscore < -0.6 else "short"
-                confidence = float(min(0.52 + abs(zscore) * 0.06, 0.74))
+                # Deep z-score reversals get more confidence
+                confidence = float(min(0.52 + abs(zscore) * 0.10, 0.82))
 
             else:   # ambiguous
                 direction  = "long" if above_ema20 and ema_bullish else "short"
-                confidence = 0.52
+                confidence = 0.53
 
             mom5 = float((close.iloc[-1] / close.iloc[-6] - 1) * 100) if len(close) >= 6 else 0.0
 

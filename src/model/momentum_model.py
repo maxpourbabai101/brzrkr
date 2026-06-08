@@ -81,10 +81,10 @@ class MultiFactorMomentum:
             risk_adj = mom_composite / max(vol_20, 0.005)
 
             # ── Confidence mapping ───────────────────────────────────────
-            # edge = |risk_adj_mom| scaled to [0, 0.35], modified by vol+trend
-            raw_edge  = min(abs(risk_adj) * 0.40, 0.35)
-            quality   = vol_mult * (0.60 + trend_r2 * 0.40)   # 0.60–1.00
-            confidence = float(min(0.50 + raw_edge * quality, 0.88))
+            # edge = |risk_adj_mom| scaled up so strong trends reach 0.85+
+            raw_edge  = min(abs(risk_adj) * 0.55, 0.44)
+            quality   = vol_mult * (0.65 + trend_r2 * 0.50)   # 0.65–1.15
+            confidence = float(min(0.50 + raw_edge * quality, 0.93))
 
             direction = "long" if mom_composite >= 0 else "short"
 

@@ -39,44 +39,65 @@ class SubModel(Protocol):
 
 @dataclass
 class EnsembleWeights:
-    lstm: float = 0.30
-    xgboost: float = 0.40
-    transformer: float = 0.30
-    rl: float = 0.0   # non-zero only when an RL agent is provided
+    lstm:        float = 0.22   # MultiFactorMomentum
+    xgboost:     float = 0.28   # TabularSentiment / trained XGB
+    transformer: float = 0.20   # RegimeAwareModel
+    confluence:  float = 0.20   # TechnicalConfluenceAgent  ← new
+    breakout:    float = 0.10   # BreakoutDetector           ← new
+    rl:          float = 0.0    # PPO agent (when trained)
 
     def normalised(self) -> Dict[str, float]:
-        total = self.lstm + self.xgboost + self.transformer + self.rl
+        total = (self.lstm + self.xgboost + self.transformer
+                 + self.confluence + self.breakout + self.rl)
         if total <= 0:
             raise ValueError("Ensemble weights must be positive.")
         return {
             "lstm":        self.lstm        / total,
             "xgboost":     self.xgboost     / total,
             "transformer": self.transformer / total,
+            "confluence":  self.confluence  / total,
+            "breakout":    self.breakout    / total,
             "rl":          self.rl          / total,
         }
 
 
 @dataclass
 class EnsemblePredictor:
-    lstm: SubModel
-    xgboost: SubModel
+    lstm:        SubModel
+    xgboost:     SubModel
     transformer: SubModel
-    weights: EnsembleWeights = field(default_factory=EnsembleWeights)
-    rl: Optional[SubModel] = None   # loaded from models/rl_ppo.zip when present
+    weights:     EnsembleWeights = field(default_factory=EnsembleWeights)
+    confluence:  Optional[SubModel] = None   # TechnicalConfluenceAgent
+    breakout:    Optional[SubModel] = None   # BreakoutDetector
+    rl:          Optional[SubModel] = None   # PPO RL agent
 
     def __post_init__(self) -> None:
-        # Auto-load the RL agent if the model file exists and none was provided.
+        # Auto-load TechnicalConfluenceAgent
+        if self.confluence is None:
+            try:
+                from src.model.technical_confluence import TechnicalConfluenceAgent
+                self.confluence = TechnicalConfluenceAgent()
+                logger.info("Ensemble: TechnicalConfluenceAgent loaded")
+            except Exception as exc:
+                logger.debug("TechnicalConfluenceAgent not loaded: %s", exc)
+
+        # Auto-load BreakoutDetector
+        if self.breakout is None:
+            try:
+                from src.model.breakout_detector import BreakoutDetector
+                self.breakout = BreakoutDetector()
+                logger.info("Ensemble: BreakoutDetector loaded")
+            except Exception as exc:
+                logger.debug("BreakoutDetector not loaded: %s", exc)
+
+        # Auto-load trained RL agent if present
         if self.rl is None:
             try:
                 from src.rl.rl_agent import RLAgent
                 loaded = RLAgent.load_if_exists()
                 if loaded is not None:
                     self.rl = loaded
-                    # Allocate 20% to RL, shrink others proportionally.
-                    self.weights = EnsembleWeights(
-                        lstm=0.24, xgboost=0.32, transformer=0.24, rl=0.20
-                    )
-                    logger.info("Ensemble: RL agent loaded (weights lstm=0.24 xgb=0.32 tf=0.24 rl=0.20)")
+                    logger.info("Ensemble: RL agent loaded")
             except Exception as exc:
                 logger.debug("RL agent not loaded: %s", exc)
 
@@ -102,6 +123,10 @@ class EnsemblePredictor:
             ("xgboost",     self.xgboost),
             ("transformer", self.transformer),
         ]
+        if self.confluence is not None:
+            members.append(("confluence", self.confluence))
+        if self.breakout is not None:
+            members.append(("breakout", self.breakout))
         if self.rl is not None:
             members.append(("rl", self.rl))
 
