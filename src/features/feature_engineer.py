@@ -47,24 +47,29 @@ class FeatureEngineer:
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
-    def build_features(self, bundle: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    def build_features(self, bundle: Dict[str, pd.DataFrame], *, full_history: bool = False) -> pd.DataFrame:
         prices = bundle.get("prices")
         if prices is None or prices.empty:
             logger.warning("FeatureEngineer: empty/missing prices — returning empty frame")
             return pd.DataFrame()
 
         feat = self._technical_features(prices.copy())
-        feat = feat.tail(self.window)
+        if not full_history:
+            feat = feat.tail(self.window)
 
         context: Dict[str, Any] = {}
+        # For context features, use the full feature history if available
+        context_source = feat if full_history else feat.tail(1)
         context.update(self._sentiment_features(bundle))
         context.update(self._insider_features(bundle))
         context.update(self._congress_features(bundle))
-        context.update(self._options_features(bundle, spot=float(feat["close"].iloc[-1])))
+        spot_price = float(feat["close"].iloc[-1])
+        context.update(self._options_features(bundle, spot=spot_price))
         context.update(self._macro_features(bundle))
         context.update(self._attention_features(bundle))
 
         feat.attrs["context"] = context
+        feat.attrs["seq_len"] = self.window
         return feat
 
     # ------------------------------------------------------------------

@@ -143,6 +143,7 @@ class AlpacaExecutor:
                 "side": str(o.side),
                 "qty": float(o.qty or 0),
                 "filled_qty": float(o.filled_qty or 0),
+                "filled_avg_price": float(o.filled_avg_price) if getattr(o, "filled_avg_price", None) else None,
                 "order_type": str(o.order_type),
                 "status": str(o.status),
                 "limit_price": float(o.limit_price) if getattr(o, "limit_price", None) else None,
@@ -281,3 +282,92 @@ class AlpacaExecutor:
             signal["stop_loss"], signal["take_profit"], self._paper,
         )
         return ExecutionResult(True, str(order.id), "ok", raw=order)
+
+    def protect_position(
+        self,
+        symbol: str,
+        qty: int,
+        stop_price: float,
+        take_profit_price: float,
+        direction: str = "long",
+    ) -> Dict[str, Any]:
+        """Place GTC stop-loss + take-profit limit orders on an *existing* position.
+
+        Because Alpaca bracket orders can only be attached at entry, this
+        places two separate GTC orders.  When one fills the other becomes
+        orphaned — the reconcile loop will cancel it on the next tick.
+
+        Returns a dict with order IDs (or error messages).
+        """
+        from alpaca.trading.requests import StopOrderRequest, LimitOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        sell_side = OrderSide.SELL if direction == "long" else OrderSide.BUY
+        results: Dict[str, Any] = {}
+
+        # ── Stop-loss ──────────────────────────────────────────────────
+        try:
+            stop_req = StopOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=sell_side,
+                time_in_force=TimeInForce.GTC,
+                stop_price=round(stop_price, 2),
+            )
+            stop_order = self._client.submit_order(order_data=stop_req)
+            results["stop_order_id"] = str(stop_order.id)
+            logger.info(
+                "protect_position: stop-loss placed for %s at $%.2f (qty=%d)",
+                symbol, stop_price, qty,
+            )
+        except Exception as exc:
+            logger.error("protect_position: stop-loss FAILED for %s: %s", symbol, exc)
+            results["stop_error"] = str(exc)
+
+        # ── Take-profit ───────────────────────────────────────────────
+        try:
+            tp_req = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=sell_side,
+                time_in_force=TimeInForce.GTC,
+                limit_price=round(take_profit_price, 2),
+            )
+            tp_order = self._client.submit_order(order_data=tp_req)
+            results["tp_order_id"] = str(tp_order.id)
+            logger.info(
+                "protect_position: take-profit placed for %s at $%.2f (qty=%d)",
+                symbol, take_profit_price, qty,
+            )
+        except Exception as exc:
+            logger.error("protect_position: take-profit FAILED for %s: %s", symbol, exc)
+            results["tp_error"] = str(exc)
+
+        return results
+
+    def close_position(self, symbol: str) -> bool:
+        """Flatten an existing position immediately via a market order.
+
+        Cancels any open orders for the symbol first (to avoid double-fill),
+        then submits a market close. Used by the trade-replacement logic when
+        a better signal displaces a weaker open position.
+
+        Returns True on success, False on any error.
+        """
+        try:
+            # Cancel open orders for this symbol to avoid orphans.
+            try:
+                self._client.cancel_orders_for_symbol(symbol)
+            except Exception as _cancel_exc:
+                logger.debug(
+                    "close_position: cancel orders for %s failed (non-fatal): %s",
+                    symbol, _cancel_exc,
+                )
+
+            # Alpaca's close-position endpoint handles direction automatically.
+            self._client.close_position(symbol)
+            logger.info("close_position: %s flattened via market order", symbol)
+            return True
+        except Exception as exc:
+            logger.error("close_position: failed to close %s — %s", symbol, exc)
+            return False

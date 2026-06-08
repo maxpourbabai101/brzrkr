@@ -1,0 +1,54 @@
+# BRZRKR — Multi-Account Configuration
+# Define 1-5 funded Alpaca accounts. Use environment variables for keys.
+accounts:
+  primary:
+    api_key_env: "ALPACA_API_KEY_PRIMARY"
+    secret_key_env: "ALPACA_SECRET_KEY_PRIMARY"
+    allocation_pct: 0.40
+    max_positions: 8
+    max_daily_loss_pct: 0.025
+    allowed_sessions: ["regular"]
+    trade_futures: false
+    trade_crypto: false
+    paper: false
+
+  secondary:
+    api_key_env: "ALPACA_API_KEY_SECONDARY"
+    secret_key_env: "ALPACA_SECRET_KEY_SECONDARY"
+    allocation_pct: 0.35
+    max_positions: 5
+    max_daily_loss_pct: 0.03
+    allowed_sessions: ["regular"]
+    trade_futures: false
+    trade_crypto: false
+    paper: false
+
+  tertiary:
+    api_key_env: "ALPACA_API_KEY_TERTIARY"
+    secret_key_env: "ALPACA_SECRET_KEY_TERTIARY"
+    allocation_pct: 0.25
+    max_positions: 4
+    max_daily_loss_pct: 0.02
+    allowed_sessions: ["regular"]
+    trade_futures: false
+    trade_crypto: false
+    paper: false
+
+portfolio:
+  max_total_exposure_pct: 0.80
+  max_sector_concentration_pct: 0.30
+  max_symbol_concentration_pct: 0.15
+  rebalance_drift_pct: 0.10
+  correlation_limit: 0.70
+
+monitoring:
+  equity_floor_alert_pct: 0.90
+  daily_pl_alert_pct: 0.05
+  position_count_alert: true
+  api_latency_alert_ms: 5000
+
+routing:
+  strategy: "concentration_aware"
+  min_trade_notional_usd: 500.0
+  prefer_low_position_count: true
+  no_hedging_same_symbol: true

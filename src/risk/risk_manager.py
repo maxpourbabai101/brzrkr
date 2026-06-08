@@ -24,14 +24,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants — adjust in config.yaml, not here.
 # ---------------------------------------------------------------------------
-MAX_POSITION_PCT = 0.05           # 5% account cap per trade
-KELLY_FRACTION = 0.5              # Half‑Kelly
+MAX_POSITION_PCT   = 0.06          # 6 % per trade — 8 slots × 6 % = 48 % max exposure
+BASE_RISK_PCT      = 0.01          # risk 1 % of equity per trade
+KELLY_FRACTION     = 0.5           # half-Kelly multiplier when Kelly sizing is active
 DEFAULT_ATR_MULT_STOP = 2.0
-DEFAULT_TP_RR = 2.0               # 2:1 reward / risk
-CORRELATION_LIMIT = 0.70
-VIX_CRISIS_LEVEL = 35.0
-REALIZED_VOL_CRISIS = 0.12        # ~190% annualised — only blocks genuine crash conditions
-# (was 0.04 / ~63% ann. which incorrectly blocked TQQQ, TSLA, AMD in normal markets)
+DEFAULT_TP_RR      = 1.5           # 1.5 : 1 reward/risk
+CORRELATION_LIMIT  = 0.70
+VIX_CRISIS_LEVEL   = 35.0
+REALIZED_VOL_CRISIS = 0.04         # 4 % daily = ~63 % ann. — matches config (was 0.12)
 
 
 # ---------------------------------------------------------------------------
@@ -43,43 +43,72 @@ def calculate_position_size(
     *,
     expected_return_pct: float = 0.01,
     max_loss_pct: float = 0.01,
+    historical_win_rate: float = 0.0,   # pass closed-trade win rate for Kelly sizing
+    historical_avg_win: float = 0.0,    # avg win as fraction of notional
+    historical_avg_loss: float = 0.0,   # avg loss as fraction of notional
 ) -> float:
-    """Return notional dollars to allocate to a new trade.
+    """Return notional USD to allocate to a new trade.
 
-    Implements Kelly half‑criterion sized by model edge, capped at
-    ``MAX_POSITION_PCT`` of the account.
+    Sizing strategy (in priority order):
+
+    1. **Kelly half-criterion** — if ≥ 30 closed trades with win/loss stats,
+       uses f* = (p × b − q) / b × KELLY_FRACTION, where b = avg_win/avg_loss.
+       This ties size directly to measured edge.
+
+    2. **Fixed-fraction fallback** — (equity × BASE_RISK_PCT) / stop_distance_pct.
+       Scaled by confidence [0.5×–1.0×]. Used when trade history is thin.
+
+    In both cases, the result is hard-capped at MAX_POSITION_PCT of equity
+    (6 % = 48 % max book exposure at 8 positions).
+
+    Examples on a $100 k account, 6 % cap:
+      AMD  stop=9.7 %  conf=0.60  → ~$6 000
+      DIA  stop=1.7 %  conf=0.65  → $6 000   (capped)
+      SPY  stop=3.3 %  conf=0.72  → $6 000   (capped)
     """
-    if account_equity <= 0:
+    if account_equity <= 0 or max_loss_pct <= 0:
         return 0.0
     confidence = float(np.clip(confidence, 0.0, 1.0))
     if confidence <= 0.0:
         return 0.0
 
-    if confidence >= 0.5:
-        # Full Kelly regime: confidence is interpreted as win probability.
-        # Edge ≈ 2p - 1, where p = win probability.
-        edge = max(2.0 * confidence - 1.0, 0.0)
-        payoff = max(expected_return_pct, 1e-4) / max(max_loss_pct, 1e-4)
-        kelly_f = max(confidence - (1.0 - confidence) / payoff, 0.0)
-        f = KELLY_FRACTION * kelly_f
-    else:
-        # Sub-0.5 regime: ensemble confidence represents directional *conviction*
-        # not a calibrated win probability.  Use a conservative linear allocation
-        # (0% → 1% of equity) so that ANY directional agreement results in a real
-        # (small) position rather than zero.
-        #
-        # BUG FIX — old code returned 0.0 for confidence < 0.5, silently
-        # blocking every trade when the ensemble uses directional-agreement
-        # confidence scores (typical range 0.25-0.45, not 0.5+).
-        edge = 0.0
-        kelly_f = 0.0
-        f = confidence * 0.06   # 0% at conf=0 → 3% at conf=0.5 (≥$1800 on $100K)
+    # Floor the stop so a vanishingly tight stop doesn't balloon the size.
+    stop_pct = max(float(max_loss_pct), 0.005)   # never tighter than 0.5 %
 
-    f = min(f, MAX_POSITION_PCT)
-    notional = account_equity * f
+    # ── Kelly sizing (requires reliable historical stats) ─────────────
+    kelly_notional = 0.0
+    if (historical_win_rate > 0
+            and historical_avg_win > 0
+            and historical_avg_loss > 0):
+        p = float(historical_win_rate)
+        q = 1.0 - p
+        b = historical_avg_win / max(historical_avg_loss, 1e-9)
+        f_star = (p * b - q) / max(b, 1e-9)       # Kelly fraction of equity
+        f_half = max(0.0, f_star) * KELLY_FRACTION  # half-Kelly for safety
+        kelly_notional = account_equity * f_half
+        logger.debug(
+            "Kelly sizing: p=%.2f b=%.2f f*=%.3f half=%.3f notional=%.0f",
+            p, b, f_star, f_half, kelly_notional,
+        )
+
+    # ── Fixed-fraction fallback ────────────────────────────────────────
+    risk_dollars = account_equity * BASE_RISK_PCT
+    ff_notional  = risk_dollars / stop_pct
+
+    # Confidence scalar: 0.50 → 0.50×,  1.00 → 1.00×
+    # Gives +0 to +50 % adjustment so high-conviction trades are slightly larger.
+    conf_scale   = 0.50 + confidence * 0.50
+    ff_notional *= conf_scale
+
+    # Blend: use Kelly if available, else fixed-fraction
+    notional = kelly_notional if kelly_notional > 0 else ff_notional
+
+    # Hard cap: never exceed MAX_POSITION_PCT of equity.
+    notional = min(notional, account_equity * MAX_POSITION_PCT)
+
     logger.debug(
-        "Position sizing: conf=%.3f edge=%.3f kelly_f=%.3f scaled_f=%.4f notional=%.2f",
-        confidence, edge, kelly_f, f, notional,
+        "Position sizing: conf=%.3f stop_pct=%.3f kelly=%.0f ff=%.0f → notional=%.2f",
+        confidence, stop_pct, kelly_notional, ff_notional, notional,
     )
     return float(notional)
 

@@ -390,7 +390,7 @@ class ScenarioRunner:
                 f"- Mean benchmark return:   **{clean['benchmark_return_pct'].mean():+.2f}%**",
                 f"- Mean relative-to-bench:  **{clean['relative_vs_benchmark_pct'].mean():+.2f}%**",
                 f"- Mean trades per run:     **{clean['trades'].mean():.1f}**",
-                f"- Mean win rate:           **{clean['win_rate'].mean() * 100:.1f}%**",
+                f"- Mean win rate:           **{clean[clean['trades'] > 0]['win_rate'].mean() * 100:.1f}%** (traded runs only — {len(clean[clean['trades'] > 0])}/{len(clean)} ran; {len(clean[clean['trades'] == 0])} had 0 trades)**",
                 f"- Mean Sharpe:             **{clean['sharpe'].mean():.2f}**",
                 f"- Mean max drawdown:       **{clean['max_drawdown_pct'].mean() * 100:.2f}%**",
                 "",

@@ -5,6 +5,9 @@ Loads ``models/xgb.json`` + ``models/xgb_features.json`` produced by
 ``.predict(features) -> dict`` interface as the heuristic sub-models
 in ``run.py``. Slots directly into :class:`EnsemblePredictor`.
 
+Uses the bare xgboost Booster instead of XGBClassifier to avoid
+segfault issues in xgboost 3.x.
+
 If the model files don't exist, :func:`maybe_load_xgb_predictor`
 returns ``None`` so callers can fall back to a heuristic.
 """
@@ -37,34 +40,37 @@ class XGBoostPredictor:
             raise FileNotFoundError(f"Model file missing: {self.model_path}")
         if not self.features_path.exists():
             raise FileNotFoundError(f"Features file missing: {self.features_path}")
-        self._model = xgb.XGBClassifier()
-        self._model.load_model(str(self.model_path))
+        # Use bare Booster to avoid XGBClassifier segfault in xgboost 3.x
+        self._booster = xgb.Booster()
+        self._booster.load_model(str(self.model_path))
         self.feature_names: List[str] = json.loads(self.features_path.read_text())
-        logger.info("Loaded XGBoost predictor: %d features from %s",
+        logger.info("Loaded XGBoost predictor (bare Booster): %d features from %s",
                     len(self.feature_names), self.model_path)
 
     def predict(self, features: pd.DataFrame) -> Dict[str, Any]:
         if features is None or features.empty:
             return _abstain()
 
+        import xgboost as xgb
         # Pull the last row's features matching the trained column order.
         last = features.iloc[-1]
-        row = pd.Series(
-            {col: float(last.get(col, np.nan)) for col in self.feature_names}
-        )
+        row_data = {col: float(last.get(col, np.nan)) for col in self.feature_names}
+        row_df = pd.DataFrame([row_data], columns=self.feature_names)
         # If too many NaNs (model was trained on different features), abstain.
-        if row.isna().sum() > len(row) * 0.5:
+        if row_df.isna().sum().sum() > len(row_df.columns) * 0.5:
             logger.warning("XGBoostPredictor: >50%% missing features — abstaining")
             return _abstain()
-        x = row.fillna(0.0).values.reshape(1, -1)
+        row_df = row_df.fillna(0.0)
 
         try:
-            proba = self._model.predict_proba(x)[0]
+            dmat = xgb.DMatrix(row_df)
+            proba = self._booster.predict(dmat)
+            # xgboost binary classification returns P(class=1) directly
+            p_long = float(proba[0]) if len(proba) > 0 else 0.5
         except Exception as exc:  # noqa: BLE001
-            logger.warning("XGBoost predict_proba failed: %s — abstaining", exc)
+            logger.warning("XGBoost predict failed: %s — abstaining", exc)
             return _abstain()
 
-        p_long = float(proba[1]) if len(proba) > 1 else float(proba[0])
         direction = "long" if p_long >= 0.5 else "short"
         confidence = max(p_long, 1.0 - p_long)
         # Pseudo expected return: probability-weighted nudge centered at zero.

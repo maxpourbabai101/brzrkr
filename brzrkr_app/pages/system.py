@@ -1,8 +1,12 @@
-"""System page — sci-fi CPU/RAM/disk gauges + process list.
+"""System page — sci-fi CPU/RAM/disk gauges + process list + data janitor.
 
 Live performance monitor for the entire trading_enhancer program.
 Updates every 2 seconds via a separate Tk after() loop (doesn't
 piggyback on broker polling — system metrics change faster than that).
+
+The bottom section has a one-click Data Maintenance panel: run the
+DataJanitor to sweep old signal files, stale market vectors, excess
+archives, and leftover scenario artifacts.
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,7 +29,7 @@ except ImportError:
 from brzrkr_app.theme import C, G, FONT_DISPLAY, FONT_MONO, FONT_SANS, FONT_SERIF
 from brzrkr_app.widgets import (
     BarMeter, BloodMetric, CodexBox, GothicCard, InkDivider,
-    PageTitle, SciFiGauge, SectionHeader, StatusBeacon,
+    PageTitle, RuneButton, GhostButton, SciFiGauge, SectionHeader, StatusBeacon,
 )
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -160,11 +165,194 @@ class SystemPage(ctk.CTkFrame):
         self._last_net = None
         self._last_net_ts = None
 
+        # ── Data Maintenance section ─────────────────────────────────
+        self._build_janitor_section(body)
+
         # Identity once
         self._set_identity()
 
         # Start the tick loop (every 2s)
         self.after(500, self._tick)
+
+    # ------------------------------------------------------------------
+    # Data Maintenance (DataJanitor) section
+    # ------------------------------------------------------------------
+    def _build_janitor_section(self, body: ctk.CTkFrame) -> None:
+        """Build the Data Maintenance card at row 6."""
+        InkDivider(body, length=720).grid(
+            row=6, column=0, columnspan=4, sticky="w", pady=(16, 8))
+
+        maint_card = GothicCard(body)
+        maint_card.grid(row=7, column=0, columnspan=4,
+                         sticky="ew", pady=(0, 12))
+        maint_card.grid_columnconfigure(0, weight=1)
+
+        SectionHeader(maint_card, "Data Maintenance", glyph=G.SKULL).grid(
+            row=0, column=0, columnspan=2, sticky="ew")
+
+        # Explanation label
+        desc = ctk.CTkLabel(
+            maint_card,
+            text=(
+                "Sweep old signal files · stale market vectors · excess archives · "
+                "leftover scenario artifacts.\n"
+                "Sacred files (trade journal, model weights, learned params) are "
+                "never touched."
+            ),
+            text_color=C.ASH,
+            font=ctk.CTkFont(family=FONT_SANS[0], size=11),
+            justify="left",
+            anchor="w",
+            wraplength=700,
+        )
+        desc.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 10), sticky="ew")
+
+        # ── Stats row ───────────────────────────────────────────────
+        stats_frame = ctk.CTkFrame(maint_card, fg_color="transparent")
+        stats_frame.grid(row=2, column=0, columnspan=2, padx=14,
+                          pady=(0, 10), sticky="ew")
+        stats_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        self._jan_files_lbl = BloodMetric(
+            stats_frame, "files deleted", "—",
+            sub="last run", color=C.WOUND,
+        )
+        self._jan_files_lbl.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+
+        self._jan_mb_lbl = BloodMetric(
+            stats_frame, "MB freed", "—",
+            sub="last run", color=C.SAGE,
+        )
+        self._jan_mb_lbl.grid(row=0, column=1, padx=6, sticky="ew")
+
+        self._jan_status_lbl = BloodMetric(
+            stats_frame, "status", "idle",
+            sub="ready", color=C.ASH,
+        )
+        self._jan_status_lbl.grid(row=0, column=2, padx=6, sticky="ew")
+
+        self._jan_time_lbl = BloodMetric(
+            stats_frame, "last run", "—",
+            sub="never", color=C.PARCHMENT,
+        )
+        self._jan_time_lbl.grid(row=0, column=3, padx=(6, 0), sticky="ew")
+
+        # ── Button row ──────────────────────────────────────────────
+        btn_frame = ctk.CTkFrame(maint_card, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, columnspan=2, padx=14,
+                        pady=(0, 4), sticky="w")
+
+        self._jan_dry_var = ctk.BooleanVar(value=False)
+        dry_check = ctk.CTkCheckBox(
+            btn_frame,
+            text="Dry run (preview only)",
+            variable=self._jan_dry_var,
+            text_color=C.PARCHMENT,
+            fg_color=C.BLOOD_DIM,
+            hover_color=C.BLOOD,
+            border_color=C.BORDER,
+            font=ctk.CTkFont(family=FONT_SANS[0], size=11),
+        )
+        dry_check.pack(side="left", padx=(0, 16))
+
+        self._jan_btn = RuneButton(
+            btn_frame,
+            "Run Janitor",
+            glyph=G.SKULL,
+            command=self._on_janitor_click,
+            width=160,
+        )
+        self._jan_btn.pack(side="left")
+
+        # ── Output log ──────────────────────────────────────────────
+        self._jan_log = CodexBox(maint_card, height=120)
+        self._jan_log.grid(row=4, column=0, columnspan=2,
+                            padx=14, pady=(4, 14), sticky="ew")
+        self._jan_log.insert("end",
+            "  Ready.  Press 'Run Janitor' to sweep stale data files.\n"
+            "  Tick 'Dry run' first to preview what will be removed.\n"
+        )
+
+        # Internal state
+        self._jan_running = False
+
+    def _on_janitor_click(self) -> None:
+        """Kick off the janitor in a background thread so UI stays alive."""
+        if self._jan_running:
+            return   # already running — ignore double-click
+
+        self._jan_running = True
+        self._jan_btn.configure(state="disabled", text=f"{G.RUNE_T}  Running…")
+        self._jan_status_lbl.set("running…", color=C.WOUND)
+        dry = self._jan_dry_var.get()
+
+        def _work():
+            try:
+                from src.maintenance.data_janitor import DataJanitor
+                janitor = DataJanitor(dry_run=dry)
+                report = janitor.run()
+                # Build a human-readable log
+                lines = []
+                mode = "DRY RUN — " if dry else ""
+                lines.append(
+                    f"  {mode}Finished at "
+                    f"{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+                )
+                lines.append(
+                    f"  Files {'would remove' if dry else 'deleted'}: "
+                    f"{report.files_deleted}"
+                )
+                lines.append(
+                    f"  Space {'would free' if dry else 'freed'}: "
+                    f"{report.bytes_freed / (1024*1024):.2f} MB"
+                )
+                if report.errors:
+                    lines.append(f"  Errors ({len(report.errors)}):")
+                    for e in report.errors:
+                        lines.append(f"    ✕  {e}")
+                else:
+                    lines.append("  No errors.")
+                # Schedule UI update back on main thread
+                self.after(0, lambda r=report, lg=lines, d=dry:
+                           self._janitor_done(r, lg, d))
+            except Exception as exc:
+                msg = str(exc)
+                self.after(0, lambda m=msg: self._janitor_error(m))
+
+        threading.Thread(target=_work, daemon=True, name="janitor-ui").start()
+
+    def _janitor_done(self, report, log_lines: list, dry: bool) -> None:
+        """Called on the main thread when the janitor finishes."""
+        self._jan_running = False
+        label = "Run Janitor"
+        self._jan_btn.configure(state="normal", text=f"{G.SKULL}  {label}")
+
+        # Update stats
+        self._jan_files_lbl.set(str(report.files_deleted), color=C.WOUND)
+        mb = report.bytes_freed / (1024 * 1024)
+        self._jan_mb_lbl.set(f"{mb:.2f}", color=C.SAGE)
+        status = "dry-run ok" if dry else ("ok" if not report.errors else "errors")
+        status_color = C.LIFE if not report.errors else C.WOUND
+        self._jan_status_lbl.set(status, color=status_color)
+        self._jan_time_lbl.set(
+            datetime.now(timezone.utc).strftime("%H:%M"), color=C.PARCHMENT
+        )
+
+        # Update log box
+        self._jan_log.configure(state="normal")
+        self._jan_log.delete("1.0", "end")
+        self._jan_log.insert("end", "\n".join(log_lines) + "\n")
+        self._jan_log.configure(state="disabled")
+
+    def _janitor_error(self, msg: str) -> None:
+        """Called on main thread if the janitor thread crashed."""
+        self._jan_running = False
+        self._jan_btn.configure(state="normal", text=f"{G.SKULL}  Run Janitor")
+        self._jan_status_lbl.set("error", color=C.WOUND)
+        self._jan_log.configure(state="normal")
+        self._jan_log.delete("1.0", "end")
+        self._jan_log.insert("end", f"  ERROR: {msg}\n")
+        self._jan_log.configure(state="disabled")
 
     # ------------------------------------------------------------------
     def update_from(self, snap: dict) -> None:

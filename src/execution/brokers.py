@@ -33,6 +33,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -213,6 +214,10 @@ def get_broker(name: str, *, live_money: bool = False, **kwargs):
     if name == "alpaca":
         from src.execution.broker import AlpacaExecutor
         return AlpacaExecutor(live_money=live_money, **kwargs)
+    if name == "multi_account":
+        from src.execution.multi_account import MultiAccountExecutor, load_accounts_config
+        accounts, portfolio = load_accounts_config(kwargs.get("config_path", Path("config/accounts.yaml")))
+        return MultiAccountExecutor(accounts=accounts, portfolio=portfolio, live_money=live_money)
     if name == "ibkr":
         # Live-money guard for IBKR will live here once the broker is real.
         if live_money:
@@ -222,5 +227,5 @@ def get_broker(name: str, *, live_money: bool = False, **kwargs):
     if name in ("paper_only", "simulator", "sim"):
         return InMemoryBroker(**kwargs)
     raise ValueError(
-        f"Unknown broker {name!r}. Available: alpaca, ibkr, paper_only."
+        f"Unknown broker {name!r}. Available: alpaca, multi_account, ibkr, paper_only."
     )

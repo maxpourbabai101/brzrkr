@@ -43,7 +43,7 @@ from src.risk.risk_manager import (
 
 logger = logging.getLogger(__name__)
 
-CONFIDENCE_THRESHOLD = 0.29   # floor matches AgentConfig / regime thresholds
+CONFIDENCE_THRESHOLD = 0.55   # matches config.yaml and AgentConfig — was erroneously 0.29
 
 
 def generate_signal(

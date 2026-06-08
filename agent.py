@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
+import xgboost as xgb  # must be imported before model loaders to avoid segfault in xgboost 3.x
 import yaml
 
 # Load .env automatically so API keys don't need to be pre-exported in shell.

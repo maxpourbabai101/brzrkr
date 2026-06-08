@@ -56,7 +56,7 @@ data:
     # - ETH/USD
     # - SOL/USD
 
-  lookback_days: 730
+  lookback_days: 252          # 1 year is sufficient; 730 wastes fetch time
   bar_timeframe: 1Day
   macro_series:
     - DGS10     # 10y Treasury yield
@@ -65,7 +65,49 @@ data:
     - UNRATE
   news_query: "stock market OR Federal Reserve OR earnings OR inflation"
 
-# -- Model ------------------------------------------------------------------
+  # --- Enhanced data sources (Phase 1) ---
+  use_congress_data: true           # Enable congressional trade tracking
+  congress_lookback_days: 60
+  congress_min_amount: 1000         # Minimum trade amount to consider
+  use_news_sentiment: true          # Enable FinBERT news sentiment
+  news_sources:
+    - rss
+    - google_news
+    - alpha_vantage
+    - finnhub
+  sentiment_lookback_days: 7
+  use_reddit_sentiment: true
+  reddit_subs: ["wallstreetbets", "stocks", "options", "investing"]
+
+  # --- Ticker → Futures mapping for congressional trades ---
+  ticker_to_futures_map:
+    # Tech heavy
+    AAPL: NQ
+    MSFT: NQ
+    NVDA: NQ
+    META: NQ
+    GOOGL: NQ
+    GOOG: NQ
+    AMD: NQ
+    # Financials
+    JPM: ZB
+    BAC: ZB
+    GS: ZB
+    MS: ZB
+    # Energy
+    XOM: CL
+    CVX: CL
+    COP: CL
+    # Materials
+    FCX: HG
+    NEM: GC
+    # Broad market
+    SPY: ES
+    QQQ: NQ
+    IWM: RTY
+    DIA: YM
+
+model:
 model:
   seq_len: 256
   transformer:
@@ -81,19 +123,20 @@ model:
 
 # -- Signals ----------------------------------------------------------------
 signals:
-  confidence_threshold: 0.29    # ensemble confidence floor; regime detector may raise this
+  confidence_threshold: 0.55    # raised: scanners boost good setups through; weak signals filtered
   output_format: json
   output_dir: data/signals/
 
 # -- Risk -------------------------------------------------------------------
 risk:
-  max_position_pct: 0.05         # 5% of equity per trade
-  kelly_fraction: 0.5            # half-Kelly
+  max_position_pct: 0.06         # 6% of equity per trade — 8 slots × 6% = 48% max exposure
+  base_risk_pct: 0.01            # risk 1% of equity per trade — fixed-fraction sizing
+  kelly_fraction: 0.5            # kept for back-compat; Kelly online sizing kicks in at 30+ trades
   default_atr_mult_stop: 2.0
-  default_tp_rr: 2.0             # 2:1 reward/risk
+  default_tp_rr: 1.5             # 1.5:1 reward/risk — take profits faster (was 2.0)
   correlation_limit: 0.70
   vix_crisis_level: 35.0
-  realized_vol_crisis: 0.04
+  realized_vol_crisis: 0.04      # synced with risk_manager.py (was 0.12 in code — fixed)
   max_drawdown_pct: 0.15
   blackout_windows_utc:
     - { start: "13:30", end: "13:35", description: "us_open" }
@@ -122,6 +165,7 @@ live:
   broker: alpaca
   account_equity_floor_usd: 25000
   initial_account_equity_usd: 100000
+  max_positions: 8               # raised from 5 — more active, better diversification
 
 # -- Learning ---------------------------------------------------------------
 learning:

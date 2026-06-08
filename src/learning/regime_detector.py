@@ -159,9 +159,19 @@ class RegimeDetector:
              hv_series.dropna()).mean()
         ) if len(hv_series.dropna()) > 1 else 0.5
 
+        # ── Historical HV percentile (tighter ranging detection)
+        hv_hist_60 = (
+            log_rets.rolling(21).std() * np.sqrt(252) * 100
+        ).dropna().iloc[-60:] if len(log_rets) >= 80 else pd.Series([hv20])
+        bb_width_pct_60 = float(
+            (close.rolling(20).std() * 4 / close.rolling(20).mean()).dropna().iloc[-60:]
+            .rank(pct=True).iloc[-1]
+        ) if len(close) >= 80 else 0.5
+
         # ── Regime classification
         label, conf = self._label(
             momentum_20d, momentum_50d, hv20, atr_pct, bb_width, vix_proxy,
+            bb_width_pct_60=bb_width_pct_60,
         )
 
         result = RegimeResult(
@@ -184,24 +194,42 @@ class RegimeDetector:
         mom20: float, mom50: float,
         hv20: float, atr_pct: float,
         bb_width: float, vix: float,
+        bb_width_pct_60: float = 0.5,
     ) -> tuple[str, float]:
-        """Simple rule-based regime classifier."""
-        is_high_vol  = hv20 > 30 or vix > 25 or atr_pct > 1.5
-        is_trending  = abs(mom20) > 3.0 or abs(mom50) > 6.0
-        is_up        = mom20 > 0 and mom50 > 0
-        is_ranging   = bb_width < 4.0 and abs(mom20) < 2.0
+        """Rule-based regime classifier with normalised thresholds.
+
+        Key changes from naive version:
+        - is_high_vol: requires BOTH hv20 AND atr_pct elevated (AND not OR)
+          to avoid single-day 1.5 % swings falsely triggering "volatile"
+        - is_trending: normalised by realised vol so TQQQ 5 % ≠ SPY 5 %
+          (mom20 / hv20 ratio > 0.30 = meaningful directional momentum)
+        - is_ranging: uses percentile of BB width over 60 days so "tight"
+          is relative to the asset's own recent history
+        """
+        # Volatility: BOTH conditions required (not OR) to avoid false triggers
+        is_high_vol = (hv20 > 28 and atr_pct > 1.2) or vix > 32
+
+        # Trending: momentum normalised by realised vol (asset-agnostic)
+        vol_adj_mom20 = abs(mom20) / max(hv20 / np.sqrt(252), 0.1)  # daily vol units
+        vol_adj_mom50 = abs(mom50) / max(hv20 / np.sqrt(252), 0.1)
+        is_trending   = vol_adj_mom20 > 1.5 or vol_adj_mom50 > 2.5  # ~1.5 daily σ
+
+        is_up     = mom20 > 0 and mom50 > 0
+        # Ranging: BB width in lowest 30th percentile of recent history
+        is_ranging = bb_width_pct_60 < 0.30 and abs(mom20) < 2.0
 
         if is_high_vol:
-            return "volatile", min(0.5 + (hv20 - 30) / 40, 0.95)
+            vol_excess = max(hv20 - 28, 0)
+            return "volatile", min(0.50 + vol_excess / 40, 0.95)
         if is_trending and is_up:
-            conf = min(0.5 + abs(mom20) / 20, 0.95)
+            conf = min(0.50 + vol_adj_mom20 / 10, 0.95)
             return "trending_up", conf
         if is_trending and not is_up:
-            conf = min(0.5 + abs(mom20) / 20, 0.95)
+            conf = min(0.50 + vol_adj_mom20 / 10, 0.95)
             return "trending_down", conf
         if is_ranging:
             return "ranging", 0.70
-        # Default: mild trending / ambiguous
+        # Default: mild drift / ambiguous
         if mom20 > 0:
             return "trending_up", 0.55
         return "trending_down", 0.55
@@ -210,30 +238,30 @@ class RegimeDetector:
     def _apply_recommendations(r: RegimeResult) -> None:
         """Mutate *r* to fill in the parameter recommendation fields."""
         if r.label == "trending_up":
-            r.confidence_threshold  = 0.28   # strong trend → trade when any agreement
+            r.confidence_threshold  = 0.55   # only high-conviction entries
             r.stop_pct_multiplier   = 1.0
-            r.tp_pct_multiplier     = 1.4    # let winners run
+            r.tp_pct_multiplier     = 1.0
             r.max_positions_factor  = 1.0
             r.side_bias             = "long_only"  # never short into a bull market
 
         elif r.label == "trending_down":
-            r.confidence_threshold  = 0.30   # selective on longs in down market
+            r.confidence_threshold  = 0.60   # selective in down market
             r.stop_pct_multiplier   = 0.8    # tighter stops
             r.tp_pct_multiplier     = 0.9
             r.max_positions_factor  = 0.8
             r.side_bias             = "both"
 
         elif r.label == "ranging":
-            r.confidence_threshold  = 0.29   # need clear directional agreement
+            r.confidence_threshold  = 0.60   # strong conviction needed in chop
             r.stop_pct_multiplier   = 0.85   # tighter stops — chop will kill
             r.tp_pct_multiplier     = 0.75   # take profits quicker
             r.max_positions_factor  = 0.75
             r.side_bias             = "both"
 
         elif r.label == "volatile":
-            r.confidence_threshold  = 0.34   # elevated bar in high-vol regime
+            r.confidence_threshold  = 0.65   # elevated bar in high-vol regime
             r.stop_pct_multiplier   = 1.5    # wider stops — gaps happen
-            r.tp_pct_multiplier     = 1.2
+            r.tp_pct_multiplier     = 1.0
             r.max_positions_factor  = 0.5    # half the usual positions
             r.side_bias             = "both"
 
