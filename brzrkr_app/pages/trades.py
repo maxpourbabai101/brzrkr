@@ -10,7 +10,6 @@ Below the arena: full position table and recent order history.
 
 from __future__ import annotations
 
-import os
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -20,23 +19,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import customtkinter as ctk
 
 from brzrkr_app.theme import C, G, FONT_DISPLAY, FONT_MONO, FONT_SANS, pnl_color
+from brzrkr_app.utils import agent_running as _agent_running
 from brzrkr_app.widgets import BloodMetric, GothicCard, PageTitle, SectionHeader
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _AGENT_PID  = _ROOT / "agent.pid"
 _AGENT_STOP = _ROOT / "AGENT_STOP"
 _AGENT_LOG  = _ROOT / "agent.out"
-
-
-def _agent_running() -> bool:
-    if not _AGENT_PID.exists():
-        return False
-    try:
-        pid = int(_AGENT_PID.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
 
 
 def _agent_is_dry_run() -> bool:

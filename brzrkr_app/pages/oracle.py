@@ -9,17 +9,18 @@ Pull a model:   ollama pull llama3
 
 Ask it anything: explain a trade, research a company, interpret a signal,
 compare strategies, or just talk through risk.
+
+Responses stream token-by-token so you see the AI thinking in real time.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import customtkinter as ctk
 import requests
@@ -29,8 +30,8 @@ from brzrkr_app.theme import C, G, FONT_DISPLAY, FONT_MONO, FONT_SANS
 ROOT        = Path(__file__).resolve().parent.parent.parent
 SIGNALS_DIR = ROOT / "data" / "signals"
 
-OLLAMA_BASE = "http://localhost:11434"
-DEFAULT_MODEL = "llama3"   # overridden by whatever is actually installed
+OLLAMA_BASE   = "http://localhost:11434"
+DEFAULT_MODEL = "llama3"
 
 _SYSTEM = """You are the BRZRKR Oracle — an expert AI trading analyst embedded inside the BRZRKR autonomous trading platform.
 
@@ -38,13 +39,13 @@ You have deep expertise in:
 • Equity and options markets, technical and fundamental analysis
 • Quantitative trading strategies, risk management, and position sizing
 • Reading and interpreting trading signals, P&L data, and market regimes
-• Explaining complex financial concepts in plain language
+• Explaining complex financial concepts clearly and directly
 
-The user is a trader using the BRZRKR platform. You have been given their current portfolio snapshot. Use it to give specific, grounded answers. Be direct and concise — this is a trading terminal, not a classroom. Lead with the answer, follow with reasoning.
+The user is a trader running BRZRKR. You have their live portfolio snapshot below. Use it to give specific, grounded answers. Be direct — this is a trading terminal, not a classroom. Lead with the answer, follow with reasoning.
 
-When asked about a specific stock or company, give a structured analysis: what the company does, key metrics/catalysts, current technical picture, and a directional view. Always note relevant risks.
+When asked about a specific stock or company: what it does, key metrics/catalysts, technical picture, directional view, key risks.
 
-Frame everything as analysis, not financial advice. Be opinionated and clear."""
+Frame everything as analysis, not financial advice. Be opinionated and clear. Keep responses concise unless depth is asked for."""
 
 
 # ---------------------------------------------------------------------------
@@ -61,33 +62,64 @@ def _ollama_models() -> List[str]:
         return []
 
 
-def _ollama_chat(model: str, messages: List[Dict], system: str) -> str:
-    """Send a chat request to Ollama and return the full reply text."""
+def _ollama_stream(
+    model: str,
+    messages: List[Dict],
+    system: str,
+    on_token: Callable[[str], None],
+    on_done: Callable[[str], None],
+    on_err: Callable[[str], None],
+) -> None:
+    """Stream a chat request from Ollama, calling on_token for each chunk.
+
+    Runs synchronously — call from a background thread.
+    on_token(text)  — called for each streamed token
+    on_done(full)   — called once when the stream finishes
+    on_err(msg)     — called if anything goes wrong
+    """
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
-        "stream": False,
+        "stream": True,
         "options": {"temperature": 0.7, "num_ctx": 4096},
     }
-    # 300s timeout: first load can be slow while the model is read from disk
-    r = requests.post(
-        f"{OLLAMA_BASE}/api/chat",
-        json=payload,
-        timeout=300,
-    )
-    r.raise_for_status()
-    return r.json()["message"]["content"]
+    full_text = ""
+    try:
+        with requests.post(
+            f"{OLLAMA_BASE}/api/chat",
+            json=payload,
+            stream=True,
+            timeout=300,
+        ) as resp:
+            resp.raise_for_status()
+            for raw_line in resp.iter_lines():
+                if not raw_line:
+                    continue
+                try:
+                    data = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                token = data.get("message", {}).get("content", "")
+                if token:
+                    full_text += token
+                    on_token(token)
+                if data.get("done"):
+                    on_done(full_text)
+                    return
+        on_done(full_text)
+    except Exception as exc:
+        on_err(str(exc))
 
 
 # ---------------------------------------------------------------------------
-# Portfolio context
+# Portfolio context builder
 # ---------------------------------------------------------------------------
 
 def _build_context(snap: Optional[Dict]) -> str:
     parts = []
     if snap:
-        eq  = snap.get("equity")
-        pos = snap.get("positions", [])
+        eq   = snap.get("equity")
+        pos  = snap.get("positions", [])
         ord_ = snap.get("orders", [])
         if eq:
             parts.append(f"Account equity: ${eq:,.2f}")
@@ -103,9 +135,11 @@ def _build_context(snap: Optional[Dict]) -> str:
                     f"  {sym} {side} {qty} shares  MV=${float(mv):,.0f}  "
                     f"unrealised={upnl:+.2f}%"
                 )
-        if ord_:
-            parts.append(f"\nOpen orders ({len(ord_)}):")
-            for o in ord_[:5]:
+        open_orders = [o for o in ord_
+                       if o.get("status") in ("new", "accepted", "pending_new", "partially_filled")]
+        if open_orders:
+            parts.append(f"\nPending orders ({len(open_orders)}):")
+            for o in open_orders[:5]:
                 parts.append(
                     f"  {o.get('symbol')} {o.get('side')} "
                     f"{o.get('qty')} @ {o.get('type')}"
@@ -116,15 +150,17 @@ def _build_context(snap: Optional[Dict]) -> str:
         if SIGNALS_DIR.exists() else []
     )
     if sig_files:
-        parts.append("\nRecent signals:")
+        parts.append("\nRecent agent signals:")
         for sf in sig_files:
             try:
                 s = json.loads(sf.read_text())
                 conf = float(s.get("confidence", 0))
+                dd   = s.get("drawdown_prob")
+                dd_s = f"  dd_prob={dd:.0%}" if dd is not None else ""
                 parts.append(
                     f"  {s.get('asset')} {s.get('direction')} "
-                    f"entry=${float(s.get('entry_price', 0)):.2f} "
-                    f"conf={conf:.0%} ({s.get('timestamp', '')[:10]})"
+                    f"@ ${float(s.get('entry_price', 0)):.2f} "
+                    f"conf={conf:.0%}{dd_s} ({s.get('timestamp', '')[:10]})"
                 )
             except Exception:
                 pass
@@ -137,16 +173,19 @@ def _build_context(snap: Optional[Dict]) -> str:
 # ---------------------------------------------------------------------------
 
 class OraclePage(ctk.CTkFrame):
-    """Local AI chat — powered by Ollama, zero API key required."""
+    """Local AI chat — powered by Ollama, streaming, zero API key required."""
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, fg_color=C.NIGHT)
         self.app = app
         self._snap: Optional[Dict] = None
         self._history: List[Dict[str, str]] = []
-        self._thinking = False
+        self._streaming  = False
         self._model: str = DEFAULT_MODEL
         self._models: List[str] = []
+
+        # Mark used to anchor streaming text insertion point
+        self._STREAM_MARK = "__stream_start__"
 
         self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -155,7 +194,6 @@ class OraclePage(ctk.CTkFrame):
         self._build_body()
         self._build_input()
 
-        # Detect available models in background so startup isn't blocked
         threading.Thread(target=self._detect_models, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -167,7 +205,6 @@ class OraclePage(ctk.CTkFrame):
         row.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 0))
         row.grid_columnconfigure(1, weight=1)
 
-        # Left: title
         left = ctk.CTkFrame(row, fg_color="transparent")
         left.grid(row=0, column=0, sticky="w")
 
@@ -180,12 +217,12 @@ class OraclePage(ctk.CTkFrame):
 
         ctk.CTkLabel(
             left,
-            text="Local AI analyst  ·  no API key needed",
+            text="Local AI analyst  ·  no API key  ·  streams live",
             font=ctk.CTkFont(family=FONT_SANS[0], size=11),
             text_color=C.ASH,
         ).pack(side="left")
 
-        # Right: model selector + status dot
+        # Model selector + status dot (clickable retry) + ↺ label
         right = ctk.CTkFrame(row, fg_color=C.PANEL, corner_radius=8)
         right.grid(row=0, column=2, sticky="e")
 
@@ -212,15 +249,26 @@ class OraclePage(ctk.CTkFrame):
         )
         self._model_menu.grid(row=0, column=1, padx=(0, 6), pady=8)
 
-        self._status_dot = ctk.CTkLabel(
+        # Status dot — click to re-detect Ollama
+        self._status_dot = ctk.CTkButton(
             right,
             text=G.DOT_DIM,
             text_color=C.GHOST,
+            fg_color="transparent",
+            hover_color=C.PANEL_HI,
+            width=28, height=28,
             font=ctk.CTkFont(size=14),
+            command=self._retry_detect,
         )
-        self._status_dot.grid(row=0, column=2, padx=(0, 10))
+        self._status_dot.grid(row=0, column=2, padx=(0, 2))
 
-        # Separator
+        ctk.CTkLabel(
+            right,
+            text="↺",
+            text_color=C.GHOST,
+            font=ctk.CTkFont(family=FONT_SANS[0], size=12),
+        ).grid(row=0, column=3, padx=(0, 12))
+
         ctk.CTkFrame(self, height=1, fg_color=C.BORDER).grid(
             row=1, column=0, sticky="ew", padx=24, pady=(12, 0))
 
@@ -277,6 +325,15 @@ class OraclePage(ctk.CTkFrame):
             font=(FONT_MONO[0], 12),
             lmargin1=18, lmargin2=18,
             spacing3=4,
+        )
+        self._chat.tag_configure("stream",
+            foreground=C.PAPER,
+            font=(FONT_MONO[0], 12),
+            lmargin1=18, lmargin2=18,
+        )
+        self._chat.tag_configure("cursor",
+            foreground=C.OMEN,
+            font=(FONT_MONO[0], 12, "bold"),
         )
         self._chat.tag_configure("dim",
             foreground=C.GHOST,
@@ -338,17 +395,16 @@ class OraclePage(ctk.CTkFrame):
         row.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 18))
         row.grid_columnconfigure(0, weight=1)
 
-        # Quick prompts
+        # Quick prompts — context-aware, use live portfolio data
         qrow = ctk.CTkFrame(row, fg_color="transparent")
         qrow.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
         for label in [
-            "Explain my positions",
-            "What's the market regime?",
-            "Biggest risk right now?",
+            "Analyze my open positions",
+            "What's my biggest risk right now?",
+            "Explain the latest signal",
+            "Market regime today?",
             "Explain Kelly sizing",
-            "What is SPY doing?",
-            "Clear",
         ]:
             ctk.CTkButton(
                 qrow,
@@ -362,7 +418,6 @@ class OraclePage(ctk.CTkFrame):
                 command=lambda t=label: self._quick(t),
             ).pack(side="left", padx=(0, 6))
 
-        # Text box
         self._input = ctk.CTkTextbox(
             row,
             height=66,
@@ -416,6 +471,12 @@ class OraclePage(ctk.CTkFrame):
         models = _ollama_models()
         self.after(0, lambda: self._on_models(models))
 
+    def _retry_detect(self) -> None:
+        """Re-probe Ollama — triggered by clicking the status dot."""
+        self._status_dot.configure(text="…", text_color=C.ASH)
+        self._model_var.set("detecting…")
+        threading.Thread(target=self._detect_models, daemon=True).start()
+
     def _on_models(self, models: List[str]) -> None:
         self._models = models
         if models:
@@ -424,22 +485,24 @@ class OraclePage(ctk.CTkFrame):
             self._model_menu.configure(values=models)
             self._status_dot.configure(text=G.DOT_ON, text_color=C.LIFE)
         else:
-            self._model_var.set("Ollama not running")
-            self._model_menu.configure(values=["Ollama not running"])
+            self._model_var.set("Ollama offline")
+            self._model_menu.configure(values=["Ollama offline"])
             self._status_dot.configure(text=G.DOT_OFF, text_color=C.GHOST)
             self._append_err(
                 "Ollama is not running.\n\n"
-                "Open Ollama from your Applications folder or menu bar,\n"
-                "then click the model dropdown above to refresh.\n\n"
-                "If not installed: https://ollama.com/download/mac"
+                "  1. Open Ollama.app from your Applications folder\n"
+                "     (sits in your menu bar once running)\n"
+                "  2. Click the  ↺  dot above to retry\n\n"
+                "Not installed yet? https://ollama.com/download/mac\n"
+                "Then pull a model:  ollama pull llama3"
             )
 
     def _on_model_change(self, value: str) -> None:
-        if value not in ("detecting…", "Ollama not running"):
+        if value not in ("detecting…", "Ollama offline"):
             self._model = value
 
     # ------------------------------------------------------------------
-    # Chat
+    # Chat — streaming
     # ------------------------------------------------------------------
 
     def _on_enter(self, _event) -> str:
@@ -447,27 +510,24 @@ class OraclePage(ctk.CTkFrame):
         return "break"
 
     def _quick(self, text: str) -> None:
-        if text == "Clear":
-            self._clear()
-            return
         self._input.delete("1.0", "end")
         self._input.insert("1.0", text)
         self._send()
 
     def _send(self) -> None:
-        if self._thinking:
+        if self._streaming:
             return
         text = self._input.get("1.0", "end").strip()
         if not text:
             return
         if not self._models:
-            self._append_err("No Ollama models available. See instructions above.")
+            self._append_err("No Ollama models found. Click the ↺ dot above to retry.")
             return
 
         self._input.delete("1.0", "end")
         self._append_you(text)
         self._history.append({"role": "user", "content": text})
-        self._set_thinking(True)
+        self._begin_stream()
 
         model   = self._model
         history = list(self._history[-20:])
@@ -475,40 +535,134 @@ class OraclePage(ctk.CTkFrame):
         system  = f"{_SYSTEM}\n\n--- LIVE PORTFOLIO ---\n{ctx}"
 
         def _worker():
-            try:
-                reply = _ollama_chat(model, history, system)
-                self._history.append({"role": "assistant", "content": reply})
-                self.after(0, lambda: self._on_reply(reply))
-            except Exception as exc:
-                self.after(0, lambda: self._on_err(str(exc)))
+            _ollama_stream(
+                model, history, system,
+                on_token=lambda t: self.after(0, lambda tok=t: self._on_token(tok)),
+                on_done =lambda f: self.after(0, lambda full=f: self._on_done(full)),
+                on_err  =lambda e: self.after(0, lambda msg=e: self._on_err(msg)),
+            )
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_reply(self, text: str) -> None:
-        self._set_thinking(False)
-        self._remove_placeholder()
-        self._append_ai(text)
+    # ------------------------------------------------------------------
+    # Streaming state machine
+    # ------------------------------------------------------------------
+
+    def _begin_stream(self) -> None:
+        """Insert Oracle label, set insertion mark, start blinking cursor."""
+        self._streaming = True
+        self._send_btn.configure(state="disabled", text="  ▌")
+
+        self._chat.configure(state="normal")
+        self._chat.insert("end", "\n")
+        self._chat.insert("end",
+            f"  {G.SUN} ORACLE  {datetime.now().strftime('%H:%M')}\n", "ai_lbl")
+        # Gravity "left" keeps the mark from drifting right as we insert after it
+        self._chat.mark_set(self._STREAM_MARK, "end")
+        self._chat.mark_gravity(self._STREAM_MARK, "left")
+        # Blinking cursor placeholder
+        self._chat.insert("end", "▌", "cursor")
+        self._chat.configure(state="disabled")
+        self._chat.see("end")
+        self._blink_cursor()
+
+    def _on_token(self, token: str) -> None:
+        """Append a streamed token — insert before the cursor glyph."""
+        if not self._streaming:
+            return
+        self._chat.configure(state="normal")
+        try:
+            cursor_pos = self._chat.search("▌", "1.0", "end")
+            if cursor_pos:
+                self._chat.delete(cursor_pos)
+                self._chat.insert(cursor_pos, token, "stream")
+                # Re-insert cursor after the new text
+                new_cursor = self._chat.index(f"{cursor_pos}+{len(token)}c")
+                self._chat.insert(new_cursor, "▌", "cursor")
+            else:
+                self._chat.insert("end", token, "stream")
+        except Exception:
+            self._chat.insert("end", token, "stream")
+        self._chat.configure(state="disabled")
+        self._chat.see("end")
+
+    def _on_done(self, full_text: str) -> None:
+        """Stream complete — remove cursor glyph, add separator, store reply."""
+        self._streaming = False
+        self._send_btn.configure(state="normal", text=f"{G.EXEC}  Ask")
+
+        self._chat.configure(state="normal")
+        try:
+            cursor_pos = self._chat.search("▌", "1.0", "end")
+            if cursor_pos:
+                self._chat.delete(cursor_pos)
+        except Exception:
+            pass
+        self._chat.insert("end", f"\n{'─'*56}\n", "sep")
+        self._chat.configure(state="disabled")
+        self._chat.see("end")
+
+        if full_text:
+            self._history.append({"role": "assistant", "content": full_text})
 
     def _on_err(self, msg: str) -> None:
-        self._set_thinking(False)
-        self._remove_placeholder()
+        self._streaming = False
+        self._send_btn.configure(state="normal", text=f"{G.EXEC}  Ask")
+
+        # Remove any partial streamed content back to the stream mark
+        self._chat.configure(state="normal")
+        try:
+            start = self._chat.index(self._STREAM_MARK)
+            self._chat.delete(start, "end")
+        except Exception:
+            pass
+        self._chat.configure(state="disabled")
         self._append_err(f"Error: {msg}")
+
+    def _blink_cursor(self) -> None:
+        """Toggle cursor glyph colour every 500ms while streaming."""
+        if not self._streaming:
+            return
+        self._chat.configure(state="normal")
+        try:
+            pos = self._chat.search("▌", "1.0", "end")
+            if pos:
+                end_pos = f"{pos}+1c"
+                tags = self._chat.tag_names(pos)
+                if "cursor" in tags:
+                    self._chat.tag_remove("cursor", pos, end_pos)
+                    self._chat.tag_add("dim", pos, end_pos)
+                else:
+                    self._chat.tag_remove("dim", pos, end_pos)
+                    self._chat.tag_add("cursor", pos, end_pos)
+        except Exception:
+            pass
+        self._chat.configure(state="disabled")
+        if self._streaming:
+            self.after(500, self._blink_cursor)
 
     # ------------------------------------------------------------------
     # Text helpers
     # ------------------------------------------------------------------
 
     def _show_welcome(self) -> None:
-        self._append_ai(
-            "Oracle online — powered by Ollama (local AI, no internet, no API key).\n\n"
-            "I have your live portfolio context. Ask me anything:\n\n"
-            "  • \"Explain my current positions and their risk\"\n"
-            "  • \"What is NVDA's outlook right now?\"\n"
-            "  • \"Why might the agent go long on AMD?\"\n"
-            "  • \"Explain the Kelly criterion in simple terms\"\n\n"
-            "First message may take 30–60 seconds while Ollama loads the model.\n"
-            "Make sure Ollama.app is running (it lives in your menu bar)."
-        )
+        self._chat.configure(state="normal")
+        self._chat.insert("end", "\n")
+        self._chat.insert("end", f"  {G.SUN} ORACLE\n", "ai_lbl")
+        self._chat.insert("end", (
+            "Online — powered by Ollama (local AI, no internet, no API key).\n"
+            "Responses stream live, token by token — no more waiting in silence.\n\n"
+            "I have your live portfolio loaded. Ask me anything:\n\n"
+            "  • Analyze my open positions and their risk\n"
+            "  • What's NVDA's outlook right now?\n"
+            "  • Why might the agent go long on AMD?\n"
+            "  • Explain the Kelly criterion in simple terms\n\n"
+            f"  {G.DOT_DIM}  Make sure Ollama.app is running (menu bar icon).\n"
+            f"  {G.DOT_DIM}  First response may take up to 2 min on cold start.\n"
+            f"  {G.DOT_DIM}  Click the  ↺  dot above if models aren't loading.\n"
+        ), "ai_txt")
+        self._chat.insert("end", f"\n{'─'*56}\n", "sep")
+        self._chat.configure(state="disabled")
 
     def _append_you(self, text: str) -> None:
         self._chat.configure(state="normal")
@@ -519,49 +673,11 @@ class OraclePage(ctk.CTkFrame):
         self._chat.configure(state="disabled")
         self._chat.see("end")
 
-    def _append_ai(self, text: str) -> None:
-        self._chat.configure(state="normal")
-        self._chat.insert("end", "\n")
-        self._chat.insert("end",
-            f"  {G.SUN} ORACLE  {datetime.now().strftime('%H:%M')}\n", "ai_lbl")
-        self._chat.insert("end", f"{text}\n", "ai_txt")
-        self._chat.insert("end", f"\n{'─'*56}\n", "sep")
-        self._chat.configure(state="disabled")
-        self._chat.see("end")
-
     def _append_err(self, text: str) -> None:
         self._chat.configure(state="normal")
         self._chat.insert("end", f"\n  {G.SKULL}  {text}\n", "err")
         self._chat.configure(state="disabled")
         self._chat.see("end")
-
-    _PH = "__thinking__"
-
-    def _set_thinking(self, on: bool) -> None:
-        self._thinking = on
-        self._send_btn.configure(
-            state="disabled" if on else "normal",
-            text="  …" if on else f"{G.EXEC}  Ask",
-        )
-        if on:
-            self._chat.configure(state="normal")
-            self._chat.insert("end", "\n")
-            self._chat.insert("end",
-                f"  {G.SUN} ORACLE\n", "ai_lbl")
-            self._chat.insert("end",
-                f"  Thinking… (first message may take 30–60s while the model loads)\n", "dim")
-            self._chat.mark_set(self._PH, "end-2l linestart")
-            self._chat.configure(state="disabled")
-            self._chat.see("end")
-
-    def _remove_placeholder(self) -> None:
-        try:
-            self._chat.configure(state="normal")
-            start = self._chat.index(self._PH)
-            self._chat.delete(start, "end")
-            self._chat.configure(state="disabled")
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Context panel
@@ -575,11 +691,17 @@ class OraclePage(ctk.CTkFrame):
         self._ctx.configure(state="disabled")
 
     def _clear(self) -> None:
+        if self._streaming:
+            return
         self._history.clear()
         self._chat.configure(state="normal")
         self._chat.delete("1.0", "end")
+        self._chat.insert("end", "\n")
+        self._chat.insert("end", f"  {G.SUN} ORACLE\n", "ai_lbl")
+        self._chat.insert("end",
+            "Conversation cleared. Portfolio context still active.\n", "ai_txt")
+        self._chat.insert("end", f"\n{'─'*56}\n", "sep")
         self._chat.configure(state="disabled")
-        self._append_ai("Conversation cleared. Portfolio context still active.")
 
     # ------------------------------------------------------------------
     # Live update hook

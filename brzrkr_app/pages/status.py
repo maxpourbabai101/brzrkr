@@ -17,6 +17,7 @@ from pathlib import Path
 import customtkinter as ctk
 
 from brzrkr_app.theme import C, G, FONT_DISPLAY, FONT_MONO, FONT_SANS, pnl_color
+from brzrkr_app.utils import agent_running, auto_trader_running
 from brzrkr_app.widgets import (
     BloodMetric, CodexBox, GhostButton, GothicCard, PageTitle,
     PulseBar, RuneButton, SectionHeader, StatusBeacon,
@@ -357,25 +358,11 @@ class StatusPage(ctk.CTkFrame):
 
     @staticmethod
     def _agent_running() -> bool:
-        if not AGENT_PID.exists():
-            return False
-        try:
-            pid = int(AGENT_PID.read_text().strip())
-            os.kill(pid, 0)
-            return True
-        except Exception:
-            return False
+        return agent_running()
 
     @staticmethod
     def _auto_running() -> tuple[bool, int]:
-        if not AUTO_PID.exists():
-            return (False, 0)
-        try:
-            pid = int(AUTO_PID.read_text().strip())
-            os.kill(pid, 0)
-            return (True, pid)
-        except Exception:
-            return (False, 0)
+        return auto_trader_running()
 
     def _start_auto_trader(self) -> None:
         running, _ = self._auto_running()

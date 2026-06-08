@@ -43,7 +43,7 @@ from src.risk.risk_manager import (
 
 logger = logging.getLogger(__name__)
 
-CONFIDENCE_THRESHOLD = 0.55   # matches config.yaml and AgentConfig — was erroneously 0.29
+CONFIDENCE_THRESHOLD = 0.55   # matches config.yaml and AgentConfig
 
 
 def generate_signal(
@@ -66,7 +66,20 @@ def generate_signal(
     Returns ``None`` if confidence is below threshold or a hard risk
     filter is triggered.
     """
-    confidence = float(model_output.get("confidence", 0.0))
+    raw_confidence = float(model_output.get("confidence", 0.0))
+
+    # Apply learned confidence calibration if enough trade history exists.
+    try:
+        from src.learning.signal_calibrator import get_calibrator
+        confidence = get_calibrator().calibrate(raw_confidence)
+        if abs(confidence - raw_confidence) > 0.001:
+            logger.debug(
+                "Confidence calibrated: %.4f → %.4f",
+                raw_confidence, confidence,
+            )
+    except Exception:
+        confidence = raw_confidence
+
     if confidence < CONFIDENCE_THRESHOLD:
         logger.info(
             "Signal suppressed: confidence %.2f below threshold %.2f",
@@ -117,6 +130,7 @@ def generate_signal(
         "expected_return_pct": round(float(model_output.get("expected_return_pct", 0.0)), 6),
         "iv_change_pct": round(float(model_output.get("iv_change_pct", 0.0)), 6),
         "confidence": round(confidence, 4),
+        "raw_confidence": round(raw_confidence, 4),
         "risk_flags": {
             "volatility_ok": vol_ok,
             "correlation_ok": corr_ok,
