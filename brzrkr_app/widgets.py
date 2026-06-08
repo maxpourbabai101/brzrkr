@@ -717,7 +717,8 @@ class LiveSimCard(ctk.CTkFrame):
     def update_from(self, status: dict | None) -> None:
         from brzrkr_app.theme import pnl_color
         if status is None:
-            self._title_lbl.configure(text="—  idle  —", text_color=C.ASH)
+            self._title_lbl.configure(text=f"{G.DOT_DIM}  waiting for simulation…",
+                                       text_color=C.GHOST)
             self._bar.set(0)
             self._curve.set_data([])
             self._equity_lbl.configure(text="equity\n—")
@@ -725,28 +726,48 @@ class LiveSimCard(ctk.CTkFrame):
             self._trades_lbl.configure(text="trades\n—")
             return
 
-        active = bool(status.get("active"))
-        scen = status.get("scenario") or "—"
-        sym = status.get("symbol") or "—"
-        cat = status.get("category") or ""
-        bars_done = int(status.get("bars_processed", 0))
+        active   = bool(status.get("active"))
+        scen     = status.get("scenario") or "—"
+        sym      = status.get("symbol")   or "—"
+        bars_done  = int(status.get("bars_processed", 0))
         bars_total = max(1, int(status.get("bars_total", 1)))
-        equity = float(status.get("current_equity", 0.0))
-        initial = float(status.get("initial_equity", 0.0)) or 100_000.0
-        history = list(status.get("equity_history") or [])
-        trades = int(status.get("trades_so_far", 0))
+        equity   = float(status.get("current_equity", 0.0))
+        initial  = float(status.get("initial_equity", 0.0)) or 100_000.0
+        history  = list(status.get("equity_history") or [])
+        trades   = int(status.get("trades_so_far", 0))
 
-        title_color = C.BONE if active else C.ASH
-        marker = G.RUNE_F if active else G.DOT_DIM
+        if active:
+            marker      = G.RUNE_F
+            title_color = C.BONE
+            label_pfx   = ""
+        elif scen != "—":
+            # Completed slot — show what it ran, dimmed
+            marker      = G.DOT_OFF
+            title_color = C.PARCHMENT
+            label_pfx   = "LAST  "
+        else:
+            # Never populated
+            marker      = G.DOT_DIM
+            title_color = C.GHOST
+            self._title_lbl.configure(
+                text=f"{G.DOT_DIM}  waiting for simulation…",
+                text_color=C.GHOST)
+            self._bar.set(0)
+            self._curve.set_data([])
+            self._equity_lbl.configure(text="equity\n—")
+            self._pl_lbl.configure(text="P/L\n—", text_color=C.ASH)
+            self._trades_lbl.configure(text="trades\n—")
+            return
+
         self._title_lbl.configure(
-            text=f"{marker}  {scen[:22]} × {sym}",
+            text=f"{marker}  {label_pfx}{scen[:18]} × {sym}",
             text_color=title_color,
         )
-        scen_pct = (bars_done / bars_total) * 100 if bars_total else 0
+        scen_pct = (bars_done / bars_total) * 100 if bars_total else 100
         self._bar.set(scen_pct)
         self._curve.set_data(history)
 
-        pl = equity - initial
+        pl     = equity - initial
         pl_pct = (pl / initial * 100) if initial else 0
         self._equity_lbl.configure(text=f"equity\n${equity:,.0f}")
         self._pl_lbl.configure(

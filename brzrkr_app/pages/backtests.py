@@ -545,7 +545,6 @@ class BacktestsPage(ctk.CTkFrame):
 
     def _refresh_live(self) -> None:
         from src.backtest.live_status import LiveStatusWriter
-        # Slot 0 lives at _live.json; slots 1+ at _live_<i>.json.
         slot_paths = [
             SCENARIO_DIR / "_live.json",
             SCENARIO_DIR / "_live_1.json",
@@ -554,9 +553,8 @@ class BacktestsPage(ctk.CTkFrame):
         ]
         statuses = [LiveStatusWriter.read(p) for p in slot_paths]
         any_active = any(s and s.get("active") for s in statuses)
-        any_present = any(s is not None for s in statuses)
 
-        # Overall progress: any slot with the overall_done/total fields.
+        # Overall progress from live files
         done = total = 0
         for s in statuses:
             if s and s.get("scenarios_total"):
@@ -569,17 +567,75 @@ class BacktestsPage(ctk.CTkFrame):
                 f"{n_active} sim(s) running   ·   {done}/{total} scenarios done",
                 "ok",
             )
-        elif any_present:
+            self.bar_overall.set((done / total * 100) if total else 0)
+            for card, status in zip(self.slot_cards, statuses):
+                card.update_from(status)
+            return
+
+        # ── Nothing actively running — populate cards from last CSV results ──
+        last_rows = self._last_csv_rows()
+        if last_rows:
+            n = len(last_rows)
             self.live_beacon.set(
-                f"battery idle ({done}/{total})", "neutral", glyph=G.DOT_DIM)
+                f"last batch: {n} completed runs  ·  start Continuous to run again",
+                "neutral", glyph=G.DOT_DIM,
+            )
+            self.bar_overall.set(100.0 if total else 0)
+            # Distribute last_rows round-robin across the 4 cards
+            for i, card in enumerate(self.slot_cards):
+                row = last_rows[i % n]
+                # Build a synthetic status dict the card understands
+                eq   = float(row.get("final_equity", 100_000))
+                init = 100_000.0
+                hist = [init, eq]   # minimal two-point curve (start→end)
+                card.update_from({
+                    "active": False,
+                    "scenario": row.get("scenario", "?"),
+                    "symbol": row.get("symbol", "?"),
+                    "category": row.get("category", ""),
+                    "bars_total": int(row.get("bars", 0)),
+                    "bars_processed": int(row.get("bars", 0)),
+                    "current_equity": eq,
+                    "initial_equity": init,
+                    "trades_so_far": int(row.get("trades", 0)),
+                    "equity_history": hist,
+                    "open_trade": None,
+                })
         else:
             self.live_beacon.set(
-                "no simulations tracked yet", "neutral", glyph=G.DOT_DIM)
-        self.bar_overall.set((done / total * 100) if total else 0)
+                "no simulations run yet — click Start Continuous above",
+                "neutral", glyph=G.DOT_DIM,
+            )
+            self.bar_overall.set(0)
+            for card in self.slot_cards:
+                card.update_from(None)
 
-        # Push each slot's state into its card
-        for card, status in zip(self.slot_cards, statuses):
-            card.update_from(status)
+    def _last_csv_rows(self) -> list:
+        """Return up to 4 recent completed (non-failed) rows from last CSV."""
+        try:
+            # Prefer partial file, then newest dated report
+            partial = SCENARIO_DIR / "_results_so_far.csv"
+            if partial.exists():
+                df = pd.read_csv(partial)
+            else:
+                reports = sorted(SCENARIO_DIR.glob("scenario_report_*.csv"))
+                if not reports:
+                    return []
+                df = pd.read_csv(reports[-1])
+            if df.empty:
+                return []
+            # Filter to non-failed, sort by best return
+            if "failed" in df.columns:
+                df = df[~df["failed"].fillna(False).astype(bool)]
+            if df.empty:
+                return []
+            # Sort: traded runs first, then by relative return
+            traded = df[df.get("trades", pd.Series(0, index=df.index)).fillna(0) > 0]
+            pool   = traded if not traded.empty else df
+            pool   = pool.sort_values("relative_vs_benchmark_pct", ascending=False)
+            return pool.head(4).to_dict("records")
+        except Exception:
+            return []
 
 
 # Late import to avoid circular imports at module load time.
