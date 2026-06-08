@@ -28,7 +28,6 @@ from brzrkr_app.pages.postmortem import PostmortemPage
 from brzrkr_app.pages.backtests import BacktestsPage
 from brzrkr_app.pages.strategy import StrategyPage
 from brzrkr_app.pages.system import SystemPage
-from brzrkr_app.pages.oracle import OraclePage
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -128,31 +127,6 @@ class MainWindow(ctk.CTk):
             btn.grid(row=3 + i, column=0, padx=8, pady=1, sticky="ew")
             self.nav_buttons[key] = btn
 
-        # Divider before Oracle
-        ctk.CTkFrame(sb, height=1, fg_color=C.BORDER).grid(
-            row=3 + len(nav_items), column=0,
-            sticky="ew", padx=14, pady=(10, 6))
-
-        ctk.CTkLabel(
-            sb, text="  AI ANALYST",
-            font=ctk.CTkFont(family=FONT_SANS[0], size=9, weight="bold"),
-            text_color=C.GHOST, anchor="w",
-        ).grid(row=3 + len(nav_items) + 1, column=0, sticky="ew", padx=14, pady=(0, 4))
-
-        oracle_btn = ctk.CTkButton(
-            sb,
-            text=f"  {G.SUN}   Oracle",
-            anchor="w", height=38,
-            fg_color="transparent",
-            hover_color=C.BLOOD_DIM,
-            text_color=C.OMEN,
-            font=ctk.CTkFont(family=FONT_SANS[0], size=12, weight="bold"),
-            corner_radius=6,
-            command=lambda: self._navigate("oracle"),
-        )
-        oracle_btn.grid(row=3 + len(nav_items) + 2, column=0, padx=8, pady=1, sticky="ew")
-        self.nav_buttons["oracle"] = oracle_btn
-
         # Footer
         sb.grid_rowconfigure(99, weight=1)
         foot = ctk.CTkFrame(sb, fg_color="transparent")
@@ -180,7 +154,6 @@ class MainWindow(ctk.CTk):
             ("postmortem", PostmortemPage),
             ("system",     SystemPage),
             ("admin",      AdminPage),
-            ("oracle",     OraclePage),
         ]
 
         self.pages: Dict[str, ctk.CTkFrame] = {}
@@ -285,15 +258,9 @@ class MainWindow(ctk.CTk):
     def _navigate(self, key: str) -> None:
         for k, btn in self.nav_buttons.items():
             if k == key:
-                if k == "oracle":
-                    btn.configure(fg_color=C.BLOOD_DIM, text_color=C.OMEN)
-                else:
-                    btn.configure(fg_color=C.BLOOD_DIM, text_color=C.BONE)
+                btn.configure(fg_color=C.BLOOD_DIM, text_color=C.BONE)
             else:
-                if k == "oracle":
-                    btn.configure(fg_color="transparent", text_color=C.OMEN)
-                else:
-                    btn.configure(fg_color="transparent", text_color=C.PARCHMENT)
+                btn.configure(fg_color="transparent", text_color=C.PARCHMENT)
         self.pages[key].tkraise()
 
     # ------------------------------------------------------------------
