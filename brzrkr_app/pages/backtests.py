@@ -40,6 +40,8 @@ class BacktestsPage(ctk.CTkFrame):
     def __init__(self, parent, app):
         super().__init__(parent, fg_color=C.NIGHT)
         self.app = app
+        import time as _time
+        self._cont_started_at: float = -9999.0   # set by _start_continuous()
 
         # Scrollable root so content > screen.
         self._scroll = ctk.CTkScrollableFrame(self, fg_color=C.NIGHT)
@@ -541,13 +543,23 @@ class BacktestsPage(ctk.CTkFrame):
         if self._CONT_STOP_FILE.exists():
             try: self._CONT_STOP_FILE.unlink()
             except Exception: pass
-        import subprocess, sys
+        import subprocess, sys, time as _time
         cmd = [sys.executable, str(ROOT / "continuous_practice.py"),
                "--parallel", "4", "--rest", "30"]
         log = open(self._CONT_LOG, "ab")
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                 start_new_session=True, cwd=str(ROOT))
         self._CONT_PID_FILE.write_text(str(proc.pid))
+        self._cont_started_at = _time.monotonic()   # track startup time
+        self.cont_status.set("Starting up…", "warn")
+        self.live_beacon.set("fetching historical data…  this takes ~15s", "warn")
+        for card in self.slot_cards:
+            card.update_from({"active": False, "scenario": "initialising",
+                               "symbol": "…", "category": "",
+                               "bars_total": 0, "bars_processed": 0,
+                               "current_equity": 100_000, "initial_equity": 100_000,
+                               "trades_so_far": 0, "equity_history": [],
+                               "open_trade": None})
         self.app.toast(f"{G.RUNE_T}  Continuous practice started (PID {proc.pid}).")
 
     def _stop_continuous(self) -> None:
@@ -582,6 +594,7 @@ class BacktestsPage(ctk.CTkFrame):
             self.cont_status.set("Not running", "neutral", glyph=G.DOT_DIM)
 
     def _refresh_live(self) -> None:
+        import time as _time
         from src.backtest.live_status import LiveStatusWriter
         slot_paths = [
             SCENARIO_DIR / "_live.json",
@@ -599,10 +612,36 @@ class BacktestsPage(ctk.CTkFrame):
                 done = max(done, int(s.get("scenarios_done", 0)))
                 total = max(total, int(s.get("scenarios_total", 0)))
 
+        # Check if the continuous process is running at all
+        proc_running, pid = self._continuous_running()
+
         if any_active:
             n_active = sum(1 for s in statuses if s and s.get("active"))
             self.live_beacon.set(
-                f"{n_active} sim(s) running   ·   {done}/{total} scenarios done",
+                f"{n_active} slot(s) running   ·   {done}/{total} scenarios done",
+                "ok",
+            )
+            self.bar_overall.set((done / total * 100) if total else 0)
+            for card, status in zip(self.slot_cards, statuses):
+                card.update_from(status)
+            return
+
+        # ── Startup grace period (first 20s after clicking Start) ──────────
+        startup_age = _time.monotonic() - getattr(self, "_cont_started_at", -9999)
+        if proc_running and startup_age < 20:
+            secs_left = int(20 - startup_age)
+            self.live_beacon.set(
+                f"starting up · fetching historical data · {secs_left}s…",
+                "warn",
+            )
+            self.bar_overall.set(0)
+            # Cards already set to "initialising" by _start_continuous — leave them
+            return
+
+        # ── Process running but slots idle (between scenarios) ─────────────
+        if proc_running and done > 0:
+            self.live_beacon.set(
+                f"between scenarios  ·  {done}/{total} done so far  ·  PID {pid}",
                 "ok",
             )
             self.bar_overall.set((done / total * 100) if total else 0)
@@ -615,17 +654,16 @@ class BacktestsPage(ctk.CTkFrame):
         if last_rows:
             n = len(last_rows)
             self.live_beacon.set(
-                f"last batch: {n} completed runs  ·  start Continuous to run again",
+                f"last batch: {n} completed runs  ·  click Start Continuous to run again",
                 "neutral", glyph=G.DOT_DIM,
             )
             self.bar_overall.set(100.0 if total else 0)
             # Distribute last_rows round-robin across the 4 cards
             for i, card in enumerate(self.slot_cards):
                 row = last_rows[i % n]
-                # Build a synthetic status dict the card understands
                 eq   = float(row.get("final_equity", 100_000))
                 init = 100_000.0
-                hist = [init, eq]   # minimal two-point curve (start→end)
+                hist = [init, eq]
                 card.update_from({
                     "active": False,
                     "scenario": row.get("scenario", "?"),
@@ -641,7 +679,7 @@ class BacktestsPage(ctk.CTkFrame):
                 })
         else:
             self.live_beacon.set(
-                "no simulations run yet — click Start Continuous above",
+                "no simulations run yet — click  Start Continuous  above",
                 "neutral", glyph=G.DOT_DIM,
             )
             self.bar_overall.set(0)
@@ -649,28 +687,39 @@ class BacktestsPage(ctk.CTkFrame):
                 card.update_from(None)
 
     def _last_csv_rows(self) -> list:
-        """Return up to 4 recent completed (non-failed) rows from last CSV."""
+        """Return up to 4 recent completed (non-failed) rows.
+
+        Uses the same fallback logic as _load_scenarios(): if the partial
+        file has fewer than 3 valid rows, read the latest dated report instead.
+        """
         try:
-            # Prefer partial file, then newest dated report
             partial = SCENARIO_DIR / "_results_so_far.csv"
+            reports = sorted(SCENARIO_DIR.glob("scenario_report_*.csv"))
+
+            def _load(path) -> pd.DataFrame:
+                df = pd.read_csv(path)
+                if "failed" in df.columns:
+                    df = df[~df["failed"].fillna(False).astype(bool)]
+                return df
+
+            df = pd.DataFrame()
             if partial.exists():
-                df = pd.read_csv(partial)
-            else:
-                reports = sorted(SCENARIO_DIR.glob("scenario_report_*.csv"))
-                if not reports:
-                    return []
-                df = pd.read_csv(reports[-1])
+                pf = _load(partial)
+                if len(pf) >= 3:
+                    df = pf
+            if df.empty and reports:
+                df = _load(reports[-1])
             if df.empty:
                 return []
-            # Filter to non-failed, sort by best return
-            if "failed" in df.columns:
-                df = df[~df["failed"].fillna(False).astype(bool)]
-            if df.empty:
-                return []
+
             # Sort: traded runs first, then by relative return
-            traded = df[df.get("trades", pd.Series(0, index=df.index)).fillna(0) > 0]
-            pool   = traded if not traded.empty else df
-            pool   = pool.sort_values("relative_vs_benchmark_pct", ascending=False)
+            if "trades" in df.columns:
+                traded = df[df["trades"].fillna(0) > 0]
+                pool = traded if not traded.empty else df
+            else:
+                pool = df
+            if "relative_vs_benchmark_pct" in pool.columns:
+                pool = pool.sort_values("relative_vs_benchmark_pct", ascending=False)
             return pool.head(4).to_dict("records")
         except Exception:
             return []

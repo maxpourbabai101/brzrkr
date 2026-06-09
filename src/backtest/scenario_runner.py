@@ -98,28 +98,93 @@ class ScenarioRunner:
 
     # ------------------------------------------------------------------
     def _fetch(self, symbol: str, scenario: MarketScenario) -> pd.DataFrame:
-        """Pull OHLCV for a specific window. Tries Alpaca first if
-        creds are present (higher rate limit), falls back to Yahoo
-        scraper. Each call also has a hard timeout."""
-        import os
-        # Try Alpaca first — much better rate limits than Yahoo.
+        """Pull OHLCV for a specific window.
+
+        Priority order:
+        1. Alpaca market data API (fast, rate-limit-friendly, no bot blocking)
+        2. yfinance (handles Yahoo anti-bot internally, reliable for history)
+        3. Yahoo scraper (last resort — susceptible to rate-limiting)
+
+        Each path has a hard timeout so a blocked/slow network cannot
+        freeze the whole process.
+        """
+        import os, signal as _sig, threading
+
+        def _run_with_timeout(fn, seconds=20):
+            """Run fn() in a thread; return None on timeout/error."""
+            result = [None]
+            exc_holder = [None]
+            def _target():
+                try:
+                    result[0] = fn()
+                except Exception as e:
+                    exc_holder[0] = e
+            t = threading.Thread(target=_target, daemon=True)
+            t.start()
+            t.join(seconds)
+            if t.is_alive():
+                return None  # timed out
+            if exc_holder[0]:
+                raise exc_holder[0]
+            return result[0]
+
+        # 1 ── Alpaca (great for recent data, free tier goes back ~5 years)
         if os.getenv("ALPACA_API_KEY") and os.getenv("ALPACA_SECRET_KEY"):
             try:
                 from src.data_loader import fetch_futures
-                df = fetch_futures(symbol, scenario.start, scenario.end)
-                if not df.empty and len(df) > 5:
+                df = _run_with_timeout(
+                    lambda: fetch_futures(symbol, scenario.start, scenario.end),
+                    seconds=20,
+                )
+                if df is not None and not df.empty and len(df) > 5:
                     return df
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Alpaca fetch failed (%s/%s): %s",
                               scenario.name, symbol, exc)
-        # Fall back to Yahoo via scraper.
-        from src.data_scraper import WebDataScraper
-        agent = WebDataScraper()
-        return agent.scrape_ohlcv(
-            symbol,
-            start=scenario.start,
-            end=scenario.end,
-        )
+
+        # 2 ── yfinance (most reliable for long historical windows)
+        try:
+            df = _run_with_timeout(
+                lambda: self._fetch_yfinance(symbol, scenario),
+                seconds=25,
+            )
+            if df is not None and not df.empty and len(df) > 5:
+                logger.debug("yfinance OK for %s/%s (%d bars)",
+                              scenario.name, symbol, len(df))
+                return df
+        except Exception as exc:
+            logger.debug("yfinance failed (%s/%s): %s", scenario.name, symbol, exc)
+
+        # 3 ── Yahoo scraper (last resort)
+        try:
+            from src.data_scraper import WebDataScraper
+            agent = WebDataScraper()
+            df = _run_with_timeout(
+                lambda: agent.scrape_ohlcv(symbol, start=scenario.start, end=scenario.end),
+                seconds=15,
+            )
+            return df if df is not None else pd.DataFrame(
+                columns=["open", "high", "low", "close", "volume"])
+        except Exception as exc:
+            logger.warning("All data sources failed (%s/%s): %s",
+                            scenario.name, symbol, exc)
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    def _fetch_yfinance(self, symbol: str, scenario: "MarketScenario") -> pd.DataFrame:
+        """Fetch OHLCV from yfinance with standardised column names."""
+        import yfinance as yf
+        start_str = scenario.start.strftime("%Y-%m-%d")
+        end_str   = scenario.end.strftime("%Y-%m-%d")
+        ticker = yf.Ticker(symbol)
+        raw = ticker.history(start=start_str, end=end_str, auto_adjust=True)
+        if raw.empty:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        # Normalise — yfinance uses Title Case columns
+        raw.columns = [c.lower() for c in raw.columns]
+        raw.index = pd.to_datetime(raw.index, utc=True)
+        raw.index.name = "timestamp"
+        cols = [c for c in ("open", "high", "low", "close", "volume") if c in raw.columns]
+        return raw[cols].dropna(how="all")
 
     def _make_predict_fn(self, ensemble, engineer) -> Callable:
         """Wrap the ensemble so the backtester (which passes raw price
