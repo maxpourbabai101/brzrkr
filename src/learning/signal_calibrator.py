@@ -30,15 +30,18 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-JOURNAL_PATH  = Path("data/trade_journal.jsonl")
-MIN_TRADES    = 5       # minimum closed trades per bucket before calibrating
-ALPHA         = 0.40    # calibration aggressiveness (0=off, 1=full)
-BUCKET_SIZE   = 0.05    # bucket width in confidence space
+JOURNAL_PATH    = Path("data/trade_journal.jsonl")
+BOOTSTRAP_PATH  = Path("data/calibration_bootstrap.json")
+MIN_TRADES      = 5       # minimum closed trades per bucket before calibrating
+ALPHA           = 0.40    # calibration aggressiveness (0=off, 1=full)
+BUCKET_SIZE     = 0.05    # bucket width in confidence space
 
 
 class SignalCalibrator:
     """
     Reads the trade journal and builds a confidence calibration map.
+    Falls back to data/calibration_bootstrap.json (pre-computed from 270k
+    backtest trades) when insufficient live trade history exists.
     Re-fits whenever called if the journal is newer than the last fit.
     """
 
@@ -46,6 +49,24 @@ class SignalCalibrator:
         self._calibration: Dict[float, float] = {}   # bucket_floor → scale_factor
         self._last_fit_ts: float = 0.0
         self._n_trades:    int   = 0
+        self._bootstrap: Dict[float, float] = self._load_bootstrap()
+
+    def _load_bootstrap(self) -> Dict[float, float]:
+        """Load pre-computed calibration prior from scripts/bootstrap_calibrator.py output."""
+        if not BOOTSTRAP_PATH.exists():
+            return {}
+        try:
+            data = json.loads(BOOTSTRAP_PATH.read_text())
+            raw = data.get("calibration", {})
+            result = {round(float(k), 4): float(v) for k, v in raw.items()}
+            logger.info(
+                "SignalCalibrator: loaded bootstrap prior (%d buckets from %s rows)",
+                len(result), data.get("csv_rows", "?"),
+            )
+            return result
+        except Exception as exc:
+            logger.debug("Could not load calibration bootstrap: %s", exc)
+            return {}
 
     def _bucket(self, conf: float) -> float:
         return round(float(int(conf / BUCKET_SIZE) * BUCKET_SIZE), 4)
@@ -106,17 +127,26 @@ class SignalCalibrator:
         return len(closed)
 
     def calibrate(self, raw_confidence: float) -> float:
-        """Return calibrated confidence for a raw model score."""
-        if not self._calibration:
-            return raw_confidence   # no data yet — pass through
+        """Return calibrated confidence for a raw model score.
 
+        Priority:
+        1. Live calibration (from closed trade journal) — most accurate
+        2. Bootstrap prior (from 270k backtest trades)   — warm start
+        3. Pass-through                                  — cold start
+        """
         b = self._bucket(raw_confidence)
-        scale = self._calibration.get(b)
-        if scale is None:
-            return raw_confidence   # bucket not yet calibrated
 
-        calibrated = float(np.clip(raw_confidence * scale, 0.0, 1.0))
-        return calibrated
+        # 1. Live-fitted calibration wins if this bucket has enough trades
+        live_scale = self._calibration.get(b)
+        if live_scale is not None:
+            return float(np.clip(raw_confidence * live_scale, 0.0, 1.0))
+
+        # 2. Bootstrap prior
+        boot_scale = self._bootstrap.get(b)
+        if boot_scale is not None:
+            return float(np.clip(raw_confidence * boot_scale, 0.0, 1.0))
+
+        return raw_confidence   # cold start — pass through
 
     def get_stats(self) -> Dict:
         return {

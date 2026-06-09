@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from src.risk.risk_manager import (
@@ -43,7 +44,16 @@ from src.risk.risk_manager import (
 
 logger = logging.getLogger(__name__)
 
-CONFIDENCE_THRESHOLD = 0.55   # matches config.yaml and AgentConfig
+_REGIME_CACHE = Path("data/regime_cache.json")
+
+def _load_regime_bias() -> str:
+    """Read side_bias from regime_cache.json. Returns 'both' if unavailable."""
+    try:
+        return json.loads(_REGIME_CACHE.read_text()).get("side_bias", "both")
+    except Exception:
+        return "both"
+
+CONFIDENCE_THRESHOLD = 0.75   # data-driven: long WR=66.7%@0.75; matches config.yaml
 
 
 def generate_signal(
@@ -88,8 +98,63 @@ def generate_signal(
         return None
 
     direction = str(model_output["direction"])
+
+    # ── Fix 1: Regime side-bias filter ────────────────────────────────────
+    # Block direction that fights the macro regime. Data: short WR=21% in
+    # trending_up. This check is also in TradingAgent._evaluate_symbol but
+    # we enforce it here so every call path (scanners, tests, CLIs) respects it.
+    side_bias = risk_params.get("side_bias") or _load_regime_bias()
+    if side_bias == "long_only" and direction == "short":
+        logger.info(
+            "Signal suppressed: regime side_bias=long_only blocks %s short (asset=%s)",
+            asset, asset,
+        )
+        return None
+    if side_bias == "short_only" and direction == "long":
+        logger.info(
+            "Signal suppressed: regime side_bias=short_only blocks %s long (asset=%s)",
+            asset, asset,
+        )
+        return None
+
+    # ── Fix 8: Semantic inverse-ETF collision check ────────────────────────
+    # Blocks new signal if a conceptually-opposite ETF is already open.
+    _INVERSE_PAIRS: Dict[str, str] = {
+        "TQQQ": "SQQQ", "SQQQ": "TQQQ",
+        "SPXL": "SPXU", "SPXU": "SPXL",
+        "TNA":  "TZA",  "TZA":  "TNA",
+        "UPRO": "SPXU",
+        "LABU": "LABD", "LABD": "LABU",
+        "NUGT": "DUST", "DUST": "NUGT",
+        "JNUG": "JDST", "JDST": "JNUG",
+    }
+    existing_positions = risk_params.get("existing_positions", [])
+    inverse = _INVERSE_PAIRS.get(asset.upper())
+    if inverse:
+        existing_symbols = {
+            (p if isinstance(p, str) else p.get("symbol", "")).upper()
+            for p in existing_positions
+        }
+        if inverse in existing_symbols:
+            logger.info(
+                "Signal suppressed: %s inverse pair %s is already open — no redundant exposure",
+                asset, inverse,
+            )
+            return None
+
     entry = float(risk_params["entry_price"])
     atr = float(risk_params["atr"])
+    current_time = risk_params.get("current_time", datetime.now(timezone.utc))
+
+    # ── Fix 7: Earnings / macro event blackout ─────────────────────────────
+    try:
+        from src.filters.event_blackout import is_blocked as _event_blocked
+        event_ok_flag, event_reason = _event_blocked(asset, now=current_time)
+        if event_ok_flag:   # is_blocked returns True when BLOCKED
+            logger.info("Signal suppressed: event blackout for %s — %s", asset, event_reason)
+            return None
+    except Exception as _exc:
+        logger.debug("Event blackout check error (%s): %s", asset, _exc)
 
     # Apply risk filters first; bail early if any block.
     vol_ok = apply_volatility_filter(
@@ -101,7 +166,7 @@ def generate_signal(
         existing_positions=risk_params.get("existing_positions", []),
         correlation_matrix=risk_params.get("correlation_matrix", {}),
     )
-    blackout_ok = apply_blackout_time(risk_params.get("current_time", datetime.now(timezone.utc)))
+    blackout_ok = apply_blackout_time(current_time)
 
     if not (vol_ok and corr_ok and blackout_ok):
         logger.info(

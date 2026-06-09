@@ -39,12 +39,12 @@ class SubModel(Protocol):
 
 @dataclass
 class EnsembleWeights:
-    lstm:        float = 0.22   # MultiFactorMomentum
-    xgboost:     float = 0.28   # TabularSentiment / trained XGB
-    transformer: float = 0.20   # RegimeAwareModel
-    confluence:  float = 0.20   # TechnicalConfluenceAgent  ← new
-    breakout:    float = 0.10   # BreakoutDetector           ← new
-    rl:          float = 0.0    # PPO agent (when trained)
+    lstm:        float = 0.20   # MultiFactorMomentum
+    xgboost:     float = 0.28   # Trained XGBoost (14 features)
+    transformer: float = 0.17   # RegimeAwareModel
+    confluence:  float = 0.17   # TechnicalConfluenceAgent
+    breakout:    float = 0.08   # BreakoutDetector
+    rl:          float = 0.10   # PPO agent (rl_ppo.zip — trained)
 
     def normalised(self) -> Dict[str, float]:
         total = (self.lstm + self.xgboost + self.transformer

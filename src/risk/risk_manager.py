@@ -28,7 +28,7 @@ MAX_POSITION_PCT   = 0.06          # 6 % per trade — 8 slots × 6 % = 48 % max
 BASE_RISK_PCT      = 0.01          # risk 1 % of equity per trade
 KELLY_FRACTION     = 0.5           # half-Kelly multiplier when Kelly sizing is active
 DEFAULT_ATR_MULT_STOP = 2.0
-DEFAULT_TP_RR      = 1.5           # 1.5 : 1 reward/risk
+DEFAULT_TP_RR      = 2.0           # data-driven: learned_params.json optimal_rr=2.0 (214k trades)
 CORRELATION_LIMIT  = 0.70
 VIX_CRISIS_LEVEL   = 35.0
 REALIZED_VOL_CRISIS = 0.04         # 4 % daily = ~63 % ann. — matches config (was 0.12)

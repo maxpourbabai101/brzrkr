@@ -51,12 +51,12 @@ class AgentConfig:
     max_positions: int = 8                   # raised from 5 — more active, better diversification
     max_daily_loss_pct: float = 0.03         # halt at -3% daily drawdown
     pre_close_minutes: int = 15              # no new entries in last 15 min
-    confidence_threshold: float = 0.55       # signal floor (regime detector updates this)
+    confidence_threshold: float = 0.75       # data: long WR=66.7% at 0.75; regime detector may adjust
     dry_run: bool = False                    # log would-be trades, don't submit
     stop_file: Path = field(default_factory=lambda: Path("AGENT_STOP"))
     signal_dir: Path = field(default_factory=lambda: Path("data/signals"))
     heartbeat_every: int = 1                 # log portfolio every N ticks
-    replacement_min_confidence: float = 0.72 # minimum confidence for a signal to displace existing
+    replacement_min_confidence: float = 0.80 # raised proportionally with threshold
     replacement_multiplier: float = 1.50     # new signal must score 1.5× the weakest position
 
 

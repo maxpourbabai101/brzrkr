@@ -108,7 +108,6 @@ data:
     DIA: YM
 
 model:
-model:
   seq_len: 256
   transformer:
     d_model: 128
@@ -116,14 +115,18 @@ model:
     n_layers: 3
     dropout: 0.1
   ensemble_weights:
-    lstm: 0.30
-    xgboost: 0.40
-    transformer: 0.30
+    lstm: 0.25         # reduced to make room for RL
+    xgboost: 0.35      # reduced to make room for RL
+    transformer: 0.25  # reduced to make room for RL
+    rl: 0.15           # PPO agent — trained, wired at 15%
   checkpoints_dir: models/
 
 # -- Signals ----------------------------------------------------------------
 signals:
-  confidence_threshold: 0.55    # raised: scanners boost good setups through; weak signals filtered
+  # 0.75 is the data-driven threshold:
+  #   long  win_rate=66.7% at this level → EV = +0.996 R/trade
+  #   short win_rate=21.1% → -0.371 R/trade → blocked by side_bias in bull regimes
+  confidence_threshold: 0.75
   output_format: json
   output_dir: data/signals/
 
@@ -133,7 +136,7 @@ risk:
   base_risk_pct: 0.01            # risk 1% of equity per trade — fixed-fraction sizing
   kelly_fraction: 0.5            # kept for back-compat; Kelly online sizing kicks in at 30+ trades
   default_atr_mult_stop: 2.0
-  default_tp_rr: 1.5             # 1.5:1 reward/risk — take profits faster (was 2.0)
+  default_tp_rr: 2.0             # data-driven: learned_params.json optimal_rr=2.0 from 214k trades
   correlation_limit: 0.70
   vix_crisis_level: 35.0
   realized_vol_crisis: 0.04      # synced with risk_manager.py (was 0.12 in code — fixed)
