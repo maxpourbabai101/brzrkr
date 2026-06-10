@@ -163,9 +163,29 @@ sessions:
   allowed_sessions:
     - regular
 
+# -- NinjaTrader / Apex Trader Funding --------------------------------------
+# Switch broker: alpaca → ninja when you hit the paper trading milestone.
+# Set NINJA_ACCOUNT, NINJA_ATI_HOST, NINJA_ATI_PORT, APEX_TIER in .env
+ninja:
+  host: "127.0.0.1"
+  port: 36973
+  default_account: "Sim101"      # change to your Apex account ID
+  apex_tier: "50k"               # 25k / 50k / 100k / 150k / 250k
+  heartbeat_interval_s: 10
+  reconnect_delay_s: 3
+  # Apex-specific instrument universe (futures only)
+  futures_universe:
+    - MES    # Micro E-mini S&P 500   ($5/pt) — safest for eval
+    - MNQ    # Micro E-mini Nasdaq    ($2/pt)
+    - ES     # E-mini S&P 500         ($50/pt)
+    - NQ     # E-mini Nasdaq-100      ($20/pt)
+    - CL     # Crude oil              ($1,000/pt)
+    - GC     # Gold                   ($100/pt)
+    - RTY    # E-mini Russell 2000    ($50/pt)
+
 # -- Live trading -----------------------------------------------------------
 live:
-  broker: alpaca
+  broker: alpaca               # change to: ninja  when paper target hit
   account_equity_floor_usd: 25000
   initial_account_equity_usd: 100000
   max_positions: 8               # raised from 5 — more active, better diversification

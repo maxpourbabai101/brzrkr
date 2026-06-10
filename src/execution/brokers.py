@@ -226,6 +226,10 @@ def get_broker(name: str, *, live_money: bool = False, **kwargs):
         return IBKRBroker(**kwargs)
     if name in ("paper_only", "simulator", "sim"):
         return InMemoryBroker(**kwargs)
+    if name in ("ninja", "ninjatrader", "nt8"):
+        from src.execution.ninja_broker import NinjaTraderBroker
+        return NinjaTraderBroker(live_money=live_money, **kwargs)
     raise ValueError(
-        f"Unknown broker {name!r}. Available: alpaca, multi_account, ibkr, paper_only."
+        f"Unknown broker {name!r}. "
+        "Available: alpaca, multi_account, ninja, ibkr, paper_only."
     )
