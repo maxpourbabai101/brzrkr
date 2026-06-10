@@ -23,11 +23,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
 
-import xgboost as xgb  # must be imported before model loaders to avoid segfault in xgboost 3.x
+# Fix: XGBoost + PyTorch share OMP on macOS → deadlock in load_state_dict.
+# Set these before any torch/xgboost import.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+import torch  # import torch BEFORE xgboost to avoid OpenMP deadlock
+import xgboost as xgb  # must be imported after torch; avoid OMP deadlock
 import yaml
 
 # Load .env automatically so API keys don't need to be pre-exported in shell.

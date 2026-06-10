@@ -205,10 +205,16 @@ def _spawn_agent(args) -> subprocess.Popen | None:
         cmd.append("--live-money")
 
     log = open(ROOT / "agent.out", "ab")
+    # Fix OpenMP deadlock: XGBoost and PyTorch share an OMP thread pool on macOS.
+    # Forcing single-threaded OMP prevents load_state_dict from deadlocking.
+    import os as _os
+    env = _os.environ.copy()
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     try:
         proc = subprocess.Popen(
             cmd, stdout=log, stderr=subprocess.STDOUT,
-            start_new_session=True, cwd=str(ROOT),
+            start_new_session=True, cwd=str(ROOT), env=env,
         )
         AGENT_PID.write_text(str(proc.pid))
         logger.info("Spawned agent PID %d", proc.pid)

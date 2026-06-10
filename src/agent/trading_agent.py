@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentConfig:
     universe: Iterable[str]
-    seq_len: int = 256
+    seq_len: int = 60   # 60 daily bars ≈ 3 months; Alpaca 252-day lookback yields ~180 trading days
     tick_seconds: int = 300                  # 5 min between ticks
     max_positions: int = 8                   # raised from 5 — more active, better diversification
     max_daily_loss_pct: float = 0.03         # halt at -3% daily drawdown
@@ -554,11 +554,12 @@ class TradingAgent:
         prices = bundle.get("prices")
         if prices is None or prices.empty or len(prices) < self.cfg.seq_len:
             n = 0 if prices is None else len(prices)
-            logger.debug("%s: insufficient history (%d bars)", symbol, n)
+            logger.info("%s: insufficient history (%d bars < seq_len=%d) — skipping", symbol, n, self.cfg.seq_len)
             return
 
         features = self.engineer.build_features(bundle)
         if features.empty:
+            logger.info("%s: feature engineering returned empty frame — skipping", symbol)
             return
 
         # Apply cross-sectional Z-score normalisation (fixes XGBoost feature scale issues)

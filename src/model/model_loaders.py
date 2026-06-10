@@ -160,7 +160,11 @@ def maybe_load_lstm(
         config_data = json.loads(config_path.read_text())
         config = LSTMConfig(**config_data)
         model = LSTMPredictor(config)
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        logger.info("LSTM: calling torch.load...")
+        state = torch.load(model_path, map_location="cpu", weights_only=False)
+        logger.info("LSTM: torch.load complete (%d keys), loading state dict...", len(state))
+        model.load_state_dict(state, strict=False)
+        logger.info("LSTM: state dict loaded")
         logger.info(f"Loaded TRAINED LSTM from {model_path}")
         return _LSTMInferenceWrapper(model)
     except Exception as exc:

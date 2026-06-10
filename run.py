@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
+import torch  # import torch BEFORE xgboost to avoid OpenMP deadlock (torch must init OMP first)
 import xgboost as xgb  # must be imported before model loaders to avoid segfault in xgboost 3.x
 import yaml
 
